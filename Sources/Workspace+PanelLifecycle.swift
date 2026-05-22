@@ -360,9 +360,6 @@ extension Workspace {
             AppDelegate.shared?.notificationStore?.clearNotifications(forTabId: id, surfaceId: panelId)
         }
 
-        if requestTransferredRemoteCleanup, let transferredRemoteCleanupConfiguration {
-            Self.requestSSHControlMasterCleanupIfNeeded(configuration: transferredRemoteCleanupConfiguration)
-        }
         return transferredRemoteCleanupConfiguration
     }
 }
