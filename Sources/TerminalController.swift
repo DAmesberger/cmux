@@ -655,18 +655,7 @@ class TerminalController {
         }
     }
 
-    nonisolated static func parseRemotePortScanKickReason(
-        _ rawReason: String
-    ) -> WorkspaceRemoteSessionController.PortScanKickReason? {
-        switch rawReason.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "command", "running", "foreground", "start":
-            return .command
-        case "refresh", "prompt", "idle":
-            return .refresh
-        default:
-            return nil
-        }
-    }
+
 
     /// Update which window's TabManager receives socket commands.
     /// This is used when the user switches between multiple terminal windows.
@@ -5996,19 +5985,7 @@ class TerminalController {
         if v2HasNonNullParam(params, "surface_id"), requestedSurfaceId == nil {
             return .err(code: "invalid_params", message: "Missing or invalid surface_id", data: nil)
         }
-        let reason: WorkspaceRemoteSessionController.PortScanKickReason
-        if let rawReason = v2RawString(params, "reason") {
-            guard let parsedReason = Self.parseRemotePortScanKickReason(rawReason) else {
-                return .err(
-                    code: "invalid_params",
-                    message: "reason must be command or refresh",
-                    data: nil
-                )
-            }
-            reason = parsedReason
-        } else {
-            reason = .command
-        }
+
 
         var result: V2CallResult = .err(
             code: "not_found",
@@ -6034,21 +6011,7 @@ class TerminalController {
                 validSurfaceIds: validSurfaceIds
             )
             guard let surfaceId, validSurfaceIds.contains(surfaceId) else {
-                if tab.isRemoteWorkspace, validSurfaceIds.isEmpty {
-                    tab.rememberPendingRemoteSurfacePortKick(
-                        reason: reason,
-                        requestedSurfaceId: requestedSurfaceId
-                    )
-                    result = .ok([
-                        "workspace_id": workspaceId.uuidString,
-                        "workspace_ref": v2Ref(kind: .workspace, uuid: workspaceId),
-                        "surface_id": v2OrNull(requestedSurfaceId?.uuidString),
-                        "surface_ref": v2Ref(kind: .surface, uuid: requestedSurfaceId),
-                        "reason": reason.rawValue,
-                        "pending": true,
-                    ])
-                    return
-                }
+
                 result = .err(
                     code: "not_found",
                     message: "Surface not found",
@@ -6062,11 +6025,7 @@ class TerminalController {
                 return
             }
 
-            if tab.isRemoteWorkspace {
-                tab.kickRemotePortScan(panelId: surfaceId, reason: reason)
-            } else {
-                PortScanner.shared.kick(workspaceId: workspaceId, panelId: surfaceId)
-            }
+            PortScanner.shared.kick(workspaceId: workspaceId, panelId: surfaceId)
 
             result = .ok([
                 "workspace_id": workspaceId.uuidString,
@@ -18646,15 +18605,7 @@ class TerminalController {
 
     private func portsKick(_ args: String) -> String {
         let parsed = parseOptions(args)
-        let reason: WorkspaceRemoteSessionController.PortScanKickReason
-        if let rawReason = parsed.options["reason"], !rawReason.isEmpty {
-            guard let parsedReason = Self.parseRemotePortScanKickReason(rawReason) else {
-                return "ERROR: Invalid ports_kick reason '\(rawReason)' — expected command or refresh"
-            }
-            reason = parsedReason
-        } else {
-            reason = .command
-        }
+
 
         if let scope = Self.explicitSocketScope(options: parsed.options) {
             TerminalMutationBus.shared.enqueueMainActorMutation {
@@ -18665,11 +18616,7 @@ class TerminalController {
                 let validSurfaceIds = Set(tab.panels.keys)
                 tab.pruneSurfaceMetadata(validSurfaceIds: validSurfaceIds)
                 guard validSurfaceIds.contains(scope.panelId) else { return }
-                if tab.isRemoteWorkspace {
-                    tab.kickRemotePortScan(panelId: scope.panelId, reason: reason)
-                } else {
-                    PortScanner.shared.kick(workspaceId: scope.workspaceId, panelId: scope.panelId)
-                }
+                PortScanner.shared.kick(workspaceId: scope.workspaceId, panelId: scope.panelId)
             }
             return "OK"
         }
@@ -18701,11 +18648,7 @@ class TerminalController {
                 surfaceId = focused
             }
 
-            if tab.isRemoteWorkspace {
-                tab.kickRemotePortScan(panelId: surfaceId, reason: reason)
-            } else {
-                PortScanner.shared.kick(workspaceId: tab.id, panelId: surfaceId)
-            }
+            PortScanner.shared.kick(workspaceId: tab.id, panelId: surfaceId)
         }
         return result
     }

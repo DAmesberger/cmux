@@ -97,7 +97,7 @@ struct DetectedSSHSession: Equatable {
                     ])
                 }
 
-                let remotePath = WorkspaceRemoteSessionController.remoteDropPath(for: normalizedLocalURL)
+                let remotePath = "~/\(normalizedLocalURL.lastPathComponent)"
                 let result = try Self.runProcess(
                     executable: "/usr/bin/scp",
                     arguments: scpArguments(localPath: normalizedLocalURL.path, remotePath: remotePath),
