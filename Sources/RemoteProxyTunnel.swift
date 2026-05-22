@@ -13,7 +13,7 @@ import GhosttyKit
 /// written once on `start()` and is safe to read from any thread after that.
 @MainActor
 final class RemoteProxyTunnel {
-    private static let maxHandshakeBytes = 64 * 1024
+    fileprivate static let maxHandshakeBytes = 64 * 1024
 
     private let connection: Ghostty.SSHConnection
     private var listener: NWListener?
@@ -29,7 +29,10 @@ final class RemoteProxyTunnel {
     }
 
     deinit {
-        stopSync()
+        // `stop()` is @MainActor-isolated so cannot be called directly from deinit.
+        // Capture the listener handle and cancel it on the main actor asynchronously.
+        let l = listener
+        Task { @MainActor in l?.cancel() }
     }
 
     /// Bind the listener and start accepting connections. Returns the assigned
@@ -120,10 +123,10 @@ private final class ProxySession: @unchecked Sendable {
     private let queue: DispatchQueue
     private let onClose: @Sendable (UUID) -> Void
 
-    private enum Protocol { case undecided, socks5, connect }
+    private enum ProxyProtocol { case undecided, socks5, connect }
     private enum SocksStage { case greeting, request }
 
-    private var proto: Protocol = .undecided
+    private var proto: ProxyProtocol = .undecided
     private var socksStage: SocksStage = .greeting
     private var handshakeBuffer = Data()
     private var isClosed = false
