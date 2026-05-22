@@ -189,7 +189,7 @@ final class PortForwardHandle {
             for await data in channel.output {
                 conn.send(content: data, completion: .contentProcessed({ _ in }))
             }
-            conn?.cancel()
+            conn.cancel()
             await MainActor.run { self?.activeConnections.removeValue(forKey: key) }
         }
 
