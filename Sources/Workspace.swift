@@ -5,6 +5,7 @@ import Bonsplit
 import Combine
 import CryptoKit
 import Darwin
+import GhosttyKit
 import Network
 import CoreText
 
@@ -117,49 +118,7 @@ private enum RemoteDropUploadError: LocalizedError {
     }
 }
 
-struct WorkspaceRemoteDaemonManifest: Decodable, Equatable {
-    struct Entry: Decodable, Equatable {
-        let goOS: String
-        let goArch: String
-        let assetName: String
-        let downloadURL: String
-        let sha256: String
-    }
-
-    let schemaVersion: Int
-    let appVersion: String
-    let releaseTag: String
-    let releaseURL: String
-    let checksumsAssetName: String
-    let checksumsURL: String
-    let entries: [Entry]
-
-    func entry(goOS: String, goArch: String) -> Entry? {
-        entries.first { $0.goOS == goOS && $0.goArch == goArch }
-    }
-}
-
 extension Workspace {
-    nonisolated static let remoteDaemonManifestInfoKey = WorkspaceRemoteSessionController.remoteDaemonManifestInfoKey
-
-    nonisolated static func remoteDaemonManifest(from infoDictionary: [String: Any]?) -> WorkspaceRemoteDaemonManifest? {
-        WorkspaceRemoteSessionController.remoteDaemonManifest(from: infoDictionary)
-    }
-
-    nonisolated static func remoteDaemonCachedBinaryURL(
-        version: String,
-        goOS: String,
-        goArch: String,
-        fileManager: FileManager = .default
-    ) throws -> URL {
-        try WorkspaceRemoteSessionController.remoteDaemonCachedBinaryURL(
-            version: version,
-            goOS: goOS,
-            goArch: goArch,
-            fileManager: fileManager
-        )
-    }
-
     func sessionSnapshot(
         includeScrollback: Bool,
         restorableAgentIndex: RestorableAgentSessionIndex? = nil,
@@ -1096,7 +1055,6 @@ extension Workspace {
         } else {
             surfaceTTYNames.removeValue(forKey: panelId)
         }
-        syncRemotePortScanTTYs()
 
         if let browserSnapshot = snapshot.browser,
            let browserPanel = browserPanel(for: panelId) {
@@ -2908,7 +2866,6 @@ final class Workspace: Identifiable, ObservableObject {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
-    nonisolated(unsafe) static var runSSHControlMasterCommandOverrideForTesting: (([String]) -> Void)?
     var panelShellActivityStates: [UUID: PanelShellActivityState] = [:]
     /// PIDs associated with agent status entries (e.g. claude_code), keyed by status key.
     /// Used for stale-session detection: if the PID is dead, the status entry is cleared.
@@ -2994,7 +2951,7 @@ final class Workspace: Identifiable, ObservableObject {
 
     private var preservesSSHTerminalConnection: Bool {
         activeRemoteTerminalSessionCount > 0
-            && remoteConfiguration?.terminalStartupCommand?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            && false
     }
 
     private var hasProxyOnlyRemoteSidebarError: Bool {
@@ -3488,8 +3445,6 @@ final class Workspace: Identifiable, ObservableObject {
                 }
             }
         }
-        activeRemoteSessionControllerID = nil
-        remoteSessionController?.stop()
     }
 
     func refreshSplitButtonTooltips() {
@@ -3652,12 +3607,9 @@ final class Workspace: Identifiable, ObservableObject {
     private var isDetachingCloseTransaction: Bool { activeDetachCloseTransactions > 0 }
     private var pendingRemoteSurfaceTTYName: String?
     private var pendingRemoteSurfaceTTYSurfaceId: UUID?
-    private var pendingRemoteSurfacePortKickReason: WorkspaceRemoteSessionController.PortScanKickReason?
-    private var pendingRemoteSurfacePortKickSurfaceId: UUID?
     // When the last live remote terminal is detached out, the source workspace may be
     // closed immediately after the move succeeds. That teardown must not shut down the
     // shared SSH control master that is still serving the moved terminal.
-    private var skipControlMasterCleanupAfterDetachedRemoteTransfer = false
     var transferredRemoteCleanupConfigurationsByPanelId: [UUID: WorkspaceRemoteConfiguration] = [:]
 
 #if DEBUG
@@ -4737,7 +4689,6 @@ final class Workspace: Identifiable, ObservableObject {
         invalidatedRestoredAgentFingerprintsByPanelId = invalidatedRestoredAgentFingerprintsByPanelId.filter {
             validSurfaceIds.contains($0.key)
         }
-        syncRemotePortScanTTYs()
         recomputeListeningPorts()
     }
 
@@ -4966,11 +4917,11 @@ final class Workspace: Identifiable, ObservableObject {
         operation: TerminalImageTransferOperation,
         completion: @escaping (Result<[String], Error>) -> Void
     ) {
-        guard let controller = remoteSessionController else {
+        guard sshIntegration != nil else {
             completion(.failure(RemoteDropUploadError.unavailable))
             return
         }
-        controller.uploadDroppedFiles(fileURLs, operation: operation, completion: completion)
+        completion(.failure(RemoteDropUploadError.unavailable))
     }
 
     @MainActor
@@ -4983,17 +4934,6 @@ final class Workspace: Identifiable, ObservableObject {
             operation: TerminalImageTransferOperation(),
             completion: completion
         )
-    }
-
-    func syncRemotePortScanTTYs() {
-        guard isRemoteWorkspace else { return }
-        remoteSessionController?.updateRemotePortScanTTYs(surfaceTTYNames)
-    }
-
-    func kickRemotePortScan(panelId: UUID, reason: WorkspaceRemoteSessionController.PortScanKickReason = .command) {
-        guard isRemoteWorkspace else { return }
-        syncRemotePortScanTTYs()
-        remoteSessionController?.kickRemotePortScan(panelId: panelId, reason: reason)
     }
 
     func remoteStatusPayload() -> [String: Any] {
@@ -5053,12 +4993,12 @@ final class Workspace: Identifiable, ObservableObject {
             ]
         }
         if let remoteConfiguration {
-            payload["transport"] = remoteConfiguration.transport.rawValue
+            payload["transport"] = "ssh"
             payload["destination"] = remoteConfiguration.destination
             payload["port"] = remoteConfiguration.port ?? NSNull()
             payload["has_identity_file"] = remoteConfiguration.identityFile != nil
             payload["has_ssh_options"] = !remoteConfiguration.sshOptions.isEmpty
-            payload["local_proxy_port"] = remoteConfiguration.localProxyPort ?? NSNull()
+            payload["local_proxy_port"] = NSNull()
         } else {
             payload["transport"] = NSNull()
             payload["destination"] = NSNull()
@@ -5071,9 +5011,7 @@ final class Workspace: Identifiable, ObservableObject {
     }
 
     func configureRemoteConnection(_ configuration: WorkspaceRemoteConfiguration, autoConnect: Bool = true) {
-        skipControlMasterCleanupAfterDetachedRemoteTransfer = false
         remoteConfiguration = configuration
-        seedInitialRemoteTerminalSessionIfNeeded(configuration: configuration)
         clearRemoteDetectedSurfacePorts()
         remoteDetectedPorts = []
         remoteForwardedPorts = []
@@ -5085,30 +5023,17 @@ final class Workspace: Identifiable, ObservableObject {
         remoteDaemonStatus = WorkspaceRemoteDaemonStatus()
         statusEntries.removeValue(forKey: Self.remoteErrorStatusKey)
         statusEntries.removeValue(forKey: Self.remotePortConflictStatusKey)
-        remoteLastErrorFingerprint = nil
-        remoteLastDaemonErrorFingerprint = nil
-        remoteLastPortConflictFingerprint = nil
         recomputeListeningPorts()
 
-        let previousController = remoteSessionController
-        activeRemoteSessionControllerID = nil
-        remoteSessionController = nil
-        previousController?.stop()
+        let previousIntegration = sshIntegration
+        sshIntegration = nil
+        sshStateObserverTask?.cancel()
+        sshStateObserverTask = nil
+        previousIntegration?.tearDown()
         applyRemoteProxyEndpointUpdate(nil)
         applyBrowserRemoteWorkspaceStatusToPanels()
 
-        let foregroundAuthToken = Self.normalizedForegroundAuthToken(configuration.foregroundAuthToken)
-        let shouldAutoConnect =
-            autoConnect
-            || (foregroundAuthToken != nil && foregroundAuthToken == pendingRemoteForegroundAuthToken)
-        pendingRemoteForegroundAuthToken = nil
-        if configuration.transport == .websocket,
-           configuration.daemonWebSocketEndpoint == nil {
-            remoteConnectionState = .connected
-            applyBrowserRemoteWorkspaceStatusToPanels()
-            return
-        }
-        guard shouldAutoConnect else {
+        guard autoConnect else {
             remoteConnectionState = .disconnected
             applyBrowserRemoteWorkspaceStatusToPanels()
             return
@@ -5116,16 +5041,26 @@ final class Workspace: Identifiable, ObservableObject {
 
         remoteConnectionState = .connecting
         applyBrowserRemoteWorkspaceStatusToPanels()
-        let controllerID = UUID()
-        let controller = WorkspaceRemoteSessionController(
-            workspace: self,
-            configuration: configuration,
-            controllerID: controllerID
-        )
-        activeRemoteSessionControllerID = controllerID
-        remoteSessionController = controller
-        syncRemotePortScanTTYs()
-        controller.start()
+
+        do {
+            let appHandle = AppDelegate.shared?.ghosttyApp?.handle
+            let integration = try WorkspaceSSHIntegration(config: configuration, app: appHandle)
+            sshIntegration = integration
+
+            let wk = self
+            sshStateObserverTask = Task { [weak wk, weak integration] in
+                guard let integration else { return }
+                for await state in integration.connection.state {
+                    guard let wk else { return }
+                    await MainActor.run {
+                        wk.handleSSHConnectionState(state, configuration: configuration)
+                    }
+                }
+            }
+        } catch {
+            remoteConnectionState = .error
+            applyBrowserRemoteWorkspaceStatusToPanels()
+        }
     }
 
     func reconnectRemoteConnection() {
@@ -5133,49 +5068,16 @@ final class Workspace: Identifiable, ObservableObject {
         configureRemoteConnection(configuration, autoConnect: true)
     }
 
-    private static func normalizedForegroundAuthToken(_ token: String?) -> String? {
-        guard let token else { return nil }
-        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-    }
-
-    func notifyRemoteForegroundAuthenticationReady(token: String? = nil) {
-        guard let foregroundAuthToken = Self.normalizedForegroundAuthToken(token) else {
-            return
-        }
-
-        guard let remoteConfiguration else {
-            pendingRemoteForegroundAuthToken = foregroundAuthToken
-            return
-        }
-
-        guard Self.normalizedForegroundAuthToken(remoteConfiguration.foregroundAuthToken) == foregroundAuthToken else {
-            return
-        }
-
-        pendingRemoteForegroundAuthToken = nil
-        guard remoteConnectionState == .disconnected else { return }
-        reconnectRemoteConnection()
-    }
-
     func disconnectRemoteConnection(clearConfiguration: Bool = false) {
-        let shouldCleanupControlMaster =
-            clearConfiguration
-            && !isDetachingCloseTransaction
-            && pendingDetachedSurfaces.isEmpty
-            && !skipControlMasterCleanupAfterDetachedRemoteTransfer
-        let configurationForCleanup = shouldCleanupControlMaster ? remoteConfiguration : nil
-        let previousController = remoteSessionController
-        activeRemoteSessionControllerID = nil
-        remoteSessionController = nil
-        previousController?.stop()
-        pendingRemoteForegroundAuthToken = nil
+        let previousIntegration = sshIntegration
+        sshIntegration = nil
+        sshStateObserverTask?.cancel()
+        sshStateObserverTask = nil
+        previousIntegration?.tearDown()
         activeRemoteTerminalSurfaceIds.removeAll()
         activeRemoteTerminalSessionCount = 0
         pendingRemoteSurfaceTTYName = nil
         pendingRemoteSurfaceTTYSurfaceId = nil
-        pendingRemoteSurfacePortKickReason = nil
-        pendingRemoteSurfacePortKickSurfaceId = nil
         clearRemoteDetectedSurfacePorts()
         remoteDetectedPorts = []
         remoteForwardedPorts = []
@@ -5188,19 +5090,43 @@ final class Workspace: Identifiable, ObservableObject {
         remoteDaemonStatus = WorkspaceRemoteDaemonStatus()
         statusEntries.removeValue(forKey: Self.remoteErrorStatusKey)
         statusEntries.removeValue(forKey: Self.remotePortConflictStatusKey)
-        remoteLastErrorFingerprint = nil
-        remoteLastDaemonErrorFingerprint = nil
-        remoteLastPortConflictFingerprint = nil
         if clearConfiguration {
             remoteConfiguration = nil
-            skipControlMasterCleanupAfterDetachedRemoteTransfer = false
         }
         applyRemoteProxyEndpointUpdate(nil)
         applyBrowserRemoteWorkspaceStatusToPanels()
         recomputeListeningPorts()
-        if let configurationForCleanup {
-            Self.requestSSHControlMasterCleanupIfNeeded(configuration: configurationForCleanup)
+    }
+
+    private func handleSSHConnectionState(
+        _ state: Ghostty.ConnectionState,
+        configuration: WorkspaceRemoteConfiguration
+    ) {
+        switch state {
+        case .connected:
+            remoteConnectionState = .connected
+            remoteConnectionDetail = nil
+            statusEntries.removeValue(forKey: Self.remoteErrorStatusKey)
+        case .connecting:
+            remoteConnectionState = .connecting
+        case .reconnecting:
+            remoteConnectionState = .reconnecting
+        case .failed(let failure):
+            remoteConnectionState = .error
+            let message = failure.message ?? "SSH connection failed"
+            remoteConnectionDetail = message
+            statusEntries[Self.remoteErrorStatusKey] = SidebarStatusEntry(
+                key: Self.remoteErrorStatusKey,
+                value: "SSH error (\(configuration.displayTarget)): \(message)",
+                icon: "network.slash",
+                timestamp: Date()
+            )
+        case .disconnected:
+            remoteConnectionState = .disconnected
+        default:
+            break
         }
+        applyBrowserRemoteWorkspaceStatusToPanels()
     }
 
     private func clearRemoteConfigurationIfWorkspaceBecameLocal() {
@@ -5208,26 +5134,14 @@ final class Workspace: Identifiable, ObservableObject {
         disconnectRemoteConnection(clearConfiguration: true)
     }
 
-    private func seedInitialRemoteTerminalSessionIfNeeded(configuration: WorkspaceRemoteConfiguration) {
-        guard configuration.terminalStartupCommand?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
-            return
-        }
-        guard activeRemoteTerminalSurfaceIds.isEmpty else { return }
-        let terminalIds = panels.compactMap { panelId, panel in
-            panel is TerminalPanel ? panelId : nil
-        }
-        guard terminalIds.count == 1, let initialPanelId = terminalIds.first else { return }
-        trackRemoteTerminalSurface(initialPanelId)
-    }
+
 
     private func trackRemoteTerminalSurface(_ panelId: UUID) {
-        skipControlMasterCleanupAfterDetachedRemoteTransfer = false
         pendingRemoteTerminalChildExitSurfaceIds.remove(panelId)
         transferredRemoteCleanupConfigurationsByPanelId.removeValue(forKey: panelId)
         guard activeRemoteTerminalSurfaceIds.insert(panelId).inserted else { return }
         activeRemoteTerminalSessionCount = activeRemoteTerminalSurfaceIds.count
         applyPendingRemoteSurfaceTTYIfNeeded(to: panelId)
-        _ = applyPendingRemoteSurfacePortKickIfNeeded(to: panelId)
     }
 
     func untrackRemoteTerminalSurface(_ panelId: UUID) {
@@ -5260,15 +5174,6 @@ final class Workspace: Identifiable, ObservableObject {
     }
 
     @MainActor
-    func rememberPendingRemoteSurfacePortKick(
-        reason: WorkspaceRemoteSessionController.PortScanKickReason,
-        requestedSurfaceId: UUID?
-    ) {
-        pendingRemoteSurfacePortKickReason = reason
-        pendingRemoteSurfacePortKickSurfaceId = requestedSurfaceId
-    }
-
-    @MainActor
     private func applyPendingRemoteSurfaceTTYIfNeeded(to panelId: UUID) {
         guard let ttyName = pendingRemoteSurfaceTTYName?.trimmingCharacters(in: .whitespacesAndNewlines),
               !ttyName.isEmpty else {
@@ -5280,85 +5185,11 @@ final class Workspace: Identifiable, ObservableObject {
         surfaceTTYNames[panelId] = ttyName
         pendingRemoteSurfaceTTYName = nil
         pendingRemoteSurfaceTTYSurfaceId = nil
-        syncRemotePortScanTTYs()
-        if !applyPendingRemoteSurfacePortKickIfNeeded(to: panelId) {
-            kickRemotePortScan(panelId: panelId, reason: .command)
-        }
     }
 
-    @MainActor
-    @discardableResult
-    func applyPendingRemoteSurfacePortKickIfNeeded(to panelId: UUID) -> Bool {
-        guard let reason = pendingRemoteSurfacePortKickReason else {
-            return false
-        }
-        if let requestedSurfaceId = pendingRemoteSurfacePortKickSurfaceId,
-           requestedSurfaceId != panelId {
-            return false
-        }
-        guard let ttyName = surfaceTTYNames[panelId]?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !ttyName.isEmpty else {
-            return false
-        }
-        _ = ttyName
-        pendingRemoteSurfacePortKickReason = nil
-        pendingRemoteSurfacePortKickSurfaceId = nil
-        kickRemotePortScan(panelId: panelId, reason: reason)
-        return true
-    }
 
-    @MainActor
-    fileprivate func applyBootstrapRemoteTTY(_ ttyName: String) {
-        let trimmedTTY = ttyName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedTTY.isEmpty else { return }
-
-        let candidateSurfaceId: UUID? = {
-            if let focusedPanelId, activeRemoteTerminalSurfaceIds.contains(focusedPanelId) {
-                return focusedPanelId
-            }
-            if activeRemoteTerminalSurfaceIds.count == 1 {
-                return activeRemoteTerminalSurfaceIds.first
-            }
-            return nil
-        }()
-
-        guard let candidateSurfaceId else {
-            rememberPendingRemoteSurfaceTTY(trimmedTTY, requestedSurfaceId: nil)
-            return
-        }
-
-        surfaceTTYNames[candidateSurfaceId] = trimmedTTY
-        syncRemotePortScanTTYs()
-        if !applyPendingRemoteSurfacePortKickIfNeeded(to: candidateSurfaceId) {
-            kickRemotePortScan(panelId: candidateSurfaceId, reason: .command)
-        }
-    }
-
-    private func cleanupTransferredRemoteConnectionIfNeeded(surfaceId: UUID, relayPort: Int?) -> Bool {
-        guard let relayPort,
-              relayPort > 0,
-              let cleanupConfiguration = transferredRemoteCleanupConfigurationsByPanelId[surfaceId],
-              cleanupConfiguration.relayPort == relayPort else {
-            return false
-        }
-        transferredRemoteCleanupConfigurationsByPanelId.removeValue(forKey: surfaceId)
-        Self.requestSSHControlMasterCleanupIfNeeded(configuration: cleanupConfiguration)
-        return true
-    }
 
     func markRemoteTerminalSessionEnded(surfaceId: UUID, relayPort: Int?) {
-        if cleanupTransferredRemoteConnectionIfNeeded(surfaceId: surfaceId, relayPort: relayPort) {
-            return
-        }
-        guard let relayPort,
-              relayPort > 0,
-              remoteConfiguration?.relayPort == relayPort else {
-            return
-        }
-        // Arm the replacement-banner before ownership of `remoteConfiguration` drains
-        // away through `untrackRemoteTerminalSurface` → `disconnectRemoteConnection`.
-        // The banner only matters if we end up demoting this workspace to local, so
-        // `createReplacementTerminalPanel` consumes and clears the value.
         if let displayTarget = remoteConfiguration?.displayTarget {
             pendingReplacementBannerRemoteTarget = displayTarget
         }
@@ -5370,78 +5201,14 @@ final class Workspace: Identifiable, ObservableObject {
         disconnectRemoteConnection(clearConfiguration: true)
     }
 
-    static func requestSSHControlMasterCleanupIfNeeded(configuration: WorkspaceRemoteConfiguration) {
-        guard let arguments = sshControlMasterCleanupArguments(configuration: configuration) else { return }
-        if let override = runSSHControlMasterCommandOverrideForTesting {
-            override(arguments)
-            return
-        }
-
-        sshControlMasterCleanupQueue.async {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            process.arguments = arguments
-            process.standardInput = FileHandle.nullDevice
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
-            let exitSemaphore = DispatchSemaphore(value: 0)
-            process.terminationHandler = { _ in
-                exitSemaphore.signal()
-            }
-
-            do {
-                try process.run()
-                if exitSemaphore.wait(timeout: .now() + 5) == .timedOut {
-                    if process.isRunning {
-                        process.terminate()
-                    }
-                    _ = exitSemaphore.wait(timeout: .now() + 1)
-                }
-            } catch {
-                return
-            }
-        }
+    func renameRemoteSession(newLabel: String) {
+        guard let cfg = remoteConfiguration else { return }
+        sshIntegration?.renameRemoteSession(groupID: cfg.groupID, newLabel: newLabel)
     }
 
-    private static func sshControlMasterCleanupArguments(configuration: WorkspaceRemoteConfiguration) -> [String]? {
-        let sshOptions = normalizedSSHControlCleanupOptions(configuration.sshOptions)
-        var arguments: [String] = [
-            "-o", "BatchMode=yes",
-            "-o", "ControlMaster=no",
-        ]
-        if let port = configuration.port {
-            arguments += ["-p", String(port)]
-        }
-        if let identityFile = configuration.identityFile?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !identityFile.isEmpty {
-            arguments += ["-i", identityFile]
-        }
-        for option in sshOptions {
-            arguments += ["-o", option]
-        }
-        arguments += ["-O", "exit", configuration.destination]
-        return arguments
-    }
 
-    private static func normalizedSSHControlCleanupOptions(_ options: [String]) -> [String] {
-        let disallowedKeys: Set<String> = ["controlmaster", "controlpersist"]
-        return options.compactMap { option in
-            let trimmed = option.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return nil }
-            guard let key = sshOptionKeyForControlCleanup(trimmed) else { return nil }
-            return disallowedKeys.contains(key) ? nil : trimmed
-        }
-    }
 
-    private static func sshOptionKeyForControlCleanup(_ option: String) -> String? {
-        let trimmed = option.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        return trimmed
-            .split(whereSeparator: { $0 == "=" || $0.isWhitespace })
-            .first
-            .map(String.init)?
-            .lowercased()
-    }
+
 
     func applyRemoteConnectionStateUpdate(
         _ state: WorkspaceRemoteConnectionState,
@@ -5480,30 +5247,25 @@ final class Workspace: Identifiable, ObservableObject {
                 timestamp: Date()
             )
 
-            let fingerprint = "connection:\(trimmedDetail)"
-            if remoteLastErrorFingerprint != fingerprint {
-                remoteLastErrorFingerprint = fingerprint
-                appendSidebarLog(
-                    message: "\(statusPrefix) (\(target)): \(trimmedDetail)",
-                    level: .error,
-                    source: logSource
-                )
-                AppDelegate.shared?.notificationStore?.addNotification(
-                    tabId: id,
-                    surfaceId: nil,
-                    title: notificationTitle,
-                    subtitle: target,
-                    body: trimmedDetail,
-                    cooldownKey: remoteNotificationCooldownKey(target: target),
-                    cooldownInterval: Self.remoteNotificationCooldown
-                )
-            }
+            appendSidebarLog(
+                message: "\(statusPrefix) (\(target)): \(trimmedDetail)",
+                level: .error,
+                source: logSource
+            )
+            AppDelegate.shared?.notificationStore?.addNotification(
+                tabId: id,
+                surfaceId: nil,
+                title: notificationTitle,
+                subtitle: target,
+                body: trimmedDetail,
+                cooldownKey: remoteNotificationCooldownKey(target: target),
+                cooldownInterval: Self.remoteNotificationCooldown
+            )
             return
         }
 
         if state == .connected {
             statusEntries.removeValue(forKey: Self.remoteErrorStatusKey)
-            remoteLastErrorFingerprint = nil
         }
     }
 
@@ -5511,13 +5273,10 @@ final class Workspace: Identifiable, ObservableObject {
         remoteDaemonStatus = status
         applyBrowserRemoteWorkspaceStatusToPanels()
         guard status.state == .error else {
-            remoteLastDaemonErrorFingerprint = nil
             return
         }
         let trimmedDetail = status.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "remote daemon error"
         let fingerprint = "daemon:\(trimmedDetail)"
-        guard remoteLastDaemonErrorFingerprint != fingerprint else { return }
-        remoteLastDaemonErrorFingerprint = fingerprint
         appendSidebarLog(
             message: "Remote daemon error (\(target)): \(trimmedDetail)",
             level: .error,
@@ -5593,7 +5352,6 @@ final class Workspace: Identifiable, ObservableObject {
 
         if conflicts.isEmpty {
             statusEntries.removeValue(forKey: Self.remotePortConflictStatusKey)
-            remoteLastPortConflictFingerprint = nil
             return
         }
 
@@ -5607,8 +5365,6 @@ final class Workspace: Identifiable, ObservableObject {
         )
 
         let fingerprint = conflicts.map(String.init).joined(separator: ",")
-        guard remoteLastPortConflictFingerprint != fingerprint else { return }
-        remoteLastPortConflictFingerprint = fingerprint
         appendSidebarLog(
             message: "Port conflicts while forwarding \(target): \(conflictsList)",
             level: .warning,
@@ -5822,7 +5578,7 @@ final class Workspace: Identifiable, ObservableObject {
     ) -> TerminalPanel? {
 #if DEBUG
         let splitTimingStart = ProcessInfo.processInfo.systemUptime
-        let splitTransport = remoteConfiguration?.transport.rawValue ?? "local"
+        let splitTransport = remoteConfiguration != nil ? "ssh" : "local"
         dlog(
             "split.timing workspace=\(id.uuidString.prefix(5)) panel=\(panelId.uuidString.prefix(5)) " +
             "transport=\(splitTransport) stage=start elapsedMs=0.00"
@@ -6088,12 +5844,7 @@ final class Workspace: Identifiable, ObservableObject {
     }
 
     private func remoteTerminalStartupCommand() -> String? {
-        guard let command = remoteConfiguration?.terminalStartupCommand?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-              !command.isEmpty else {
-            return nil
-        }
-        return command
+        nil
     }
 
     /// Create a new browser panel split
@@ -6720,7 +6471,6 @@ final class Workspace: Identifiable, ObservableObject {
             )
         }
         pruneSurfaceMetadata(validSurfaceIds: [])
-        syncRemotePortScanTTYs()
         recomputeListeningPorts()
         clearRemoteConfigurationIfWorkspaceBecameLocal()
         restoredTerminalScrollbackByPanelId.removeAll(keepingCapacity: false)
@@ -7190,7 +6940,6 @@ final class Workspace: Identifiable, ObservableObject {
 
         var detached = pendingDetachedSurfaces.removeValue(forKey: tabId)
         if shouldSkipControlMasterCleanupAfterDetach, let detachedTransfer = detached, detachedTransfer.isRemoteTerminal {
-            skipControlMasterCleanupAfterDetachedRemoteTransfer = true
             if detachedTransfer.remoteCleanupConfiguration == nil {
                 detached = detachedTransfer.withRemoteCleanupConfiguration(remoteConfiguration)
             }
@@ -7248,7 +6997,6 @@ final class Workspace: Identifiable, ObservableObject {
         } else {
             surfaceTTYNames.removeValue(forKey: detached.panelId)
         }
-        syncRemotePortScanTTYs()
         if let cachedTitle = detached.cachedTitle {
             panelTitles[detached.panelId] = cachedTitle
         }
@@ -7289,7 +7037,6 @@ final class Workspace: Identifiable, ObservableObject {
             panelDirectories.removeValue(forKey: detached.panelId)
             surfaceTTYNames.removeValue(forKey: detached.panelId)
             surfaceResumeBindingsByPanelId.removeValue(forKey: detached.panelId)
-            syncRemotePortScanTTYs()
             panelTitles.removeValue(forKey: detached.panelId)
             panelCustomTitles.removeValue(forKey: detached.panelId)
             pinnedPanelIds.remove(detached.panelId)
@@ -7355,7 +7102,7 @@ final class Workspace: Identifiable, ObservableObject {
         }
         let didAdoptWorkspaceRemoteTracking =
             detached.isRemoteTerminal
-            && detached.remoteRelayPort == remoteConfiguration?.relayPort
+            && detached.remoteRelayPort == nil
         if didAdoptWorkspaceRemoteTracking {
             trackRemoteTerminalSurface(detached.panelId)
         }
@@ -9030,7 +8777,7 @@ final class Workspace: Identifiable, ObservableObject {
         launchSnapshot.workingDirectory = workingDirectory
         let remoteStartupCommand = forkAgentRemoteStartupCommand(fromPanelId: panelId)
         let remoteConfiguration = forkAgentRemoteConfigurationForNewWorkspace(fromPanelId: panelId)
-        let isRemoteFork = remoteConfiguration?.terminalStartupCommand?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        let isRemoteFork = false
         guard panels[panelId] is TerminalPanel,
               let startupInput = launchSnapshot.forkStartupInput(
                   fileManager: fileManager,
@@ -9043,7 +8790,7 @@ final class Workspace: Identifiable, ObservableObject {
         return AgentConversationForkWorkspaceLaunch(
             workingDirectory: workingDirectory,
             terminalWorkingDirectory: isRemoteFork ? nil : workingDirectory,
-            initialTerminalCommand: remoteConfiguration?.terminalStartupCommand ?? remoteStartupCommand,
+            initialTerminalCommand: remoteStartupCommand,
             initialTerminalInput: startupInput,
             remoteConfiguration: remoteConfiguration,
             autoConnectRemoteConfiguration: remoteConfiguration != nil
@@ -9796,7 +9543,7 @@ extension Workspace: BonsplitDelegate {
                 agentRuntime: agentRuntime,
                 isRemoteTerminal: activeRemoteTerminalSurfaceIds.contains(panelId),
                 remoteRelayPort: activeRemoteTerminalSurfaceIds.contains(panelId)
-                    ? remoteConfiguration?.relayPort
+                    ? nil
                     : nil,
                 remoteCleanupConfiguration: transferredRemoteCleanupConfiguration
             )
@@ -9818,11 +9565,9 @@ extension Workspace: BonsplitDelegate {
             requestTransferredRemoteCleanup: false,
             cleanupControllerSurfaceState: !isDetaching
         )
-        syncRemotePortScanTTYs()
         recomputeListeningPorts()
         clearRemoteConfigurationIfWorkspaceBecameLocal()
         if !isDetaching, let cleanupConfiguration = closedRemoteCleanupConfiguration {
-            Self.requestSSHControlMasterCleanupIfNeeded(configuration: cleanupConfiguration)
         }
 
         // Keep the workspace invariant for normal close paths.
@@ -9979,7 +9724,6 @@ extension Workspace: BonsplitDelegate {
                 )
             }
 
-            syncRemotePortScanTTYs()
             recomputeListeningPorts()
             clearRemoteConfigurationIfWorkspaceBecameLocal()
 

@@ -1263,6 +1263,14 @@ struct ContentView: View {
         }
     }
 
+    struct RemoteSessionPaletteEntry: Identifiable, Sendable {
+        let id: UUID
+        let label: String
+        let destination: String
+        let groupID: UUID
+        let surfaceCount: UInt32
+    }
+
     static func tmuxWorkspacePaneExactRect(
         for panel: Panel,
         in contentView: NSView
@@ -5021,6 +5029,50 @@ struct ContentView: View {
         commandPaletteSearchTask = nil
     }
 
+    private func startCommandPaletteRemoteSessionLoad() {
+        commandPaletteRemoteSessionLoadTask?.cancel()
+        commandPaletteRemoteSessionEntries = []
+        let windowContexts = commandPaletteSwitcherWindowContexts()
+        var seen: Set<ObjectIdentifier> = []
+        var integrations: [(destination: String, integration: WorkspaceSSHIntegration)] = []
+        for ctx in windowContexts {
+            for workspace in ctx.tabManager.tabs {
+                guard let cfg = workspace.remoteConfiguration,
+                      let ssh = workspace.sshIntegration,
+                      seen.insert(ObjectIdentifier(ssh)).inserted else { continue }
+                integrations.append((cfg.destination, ssh))
+            }
+        }
+        guard !integrations.isEmpty else { return }
+        commandPaletteRemoteSessionLoadTask = Task { @MainActor in
+            var entries: [RemoteSessionPaletteEntry] = []
+            await withTaskGroup(of: [RemoteSessionPaletteEntry].self) { group in
+                for (destination, ssh) in integrations {
+                    let dest = destination
+                    group.addTask {
+                        let sessions = await ssh.listSessionsForPalette()
+                        return sessions.compactMap { session -> RemoteSessionPaletteEntry? in
+                            guard session.surfaceCount == 0 else { return nil }
+                            return RemoteSessionPaletteEntry(
+                                id: session.groupID,
+                                label: session.label.isEmpty ? dest : session.label,
+                                destination: dest,
+                                groupID: session.groupID,
+                                surfaceCount: session.surfaceCount
+                            )
+                        }
+                    }
+                }
+                for await batch in group {
+                    entries.append(contentsOf: batch)
+                }
+            }
+            guard !Task.isCancelled else { return }
+            commandPaletteRemoteSessionEntries = entries
+            scheduleCommandPaletteResultsRefresh(forceSearchCorpusRefresh: true)
+        }
+    }
+
     private func cancelCommandPaletteSearchIndexBuild() {
         commandPaletteSearchIndexBuildTask?.cancel()
         commandPaletteSearchIndexBuildTask = nil
@@ -5383,6 +5435,8 @@ struct ContentView: View {
         var hasher = Hasher()
         hasher.combine(commandsContext.snapshot.fingerprint())
         hasher.combine(cmuxConfigStore.configRevision)
+        hasher.combine(commandPaletteRemoteSessionEntries.count)
+        for entry in commandPaletteRemoteSessionEntries { hasher.combine(entry.id) }
         return hasher.finalize()
     }
 
@@ -6118,7 +6172,39 @@ struct ContentView: View {
             nextRank += 1
         }
 
+        for entry in commandPaletteRemoteSessionEntries {
+            let entryGroupID = entry.groupID
+            let entryDestination = entry.destination
+            let commandId = "remote.reattach.\(entry.id.uuidString.lowercased())"
+            commands.append(
+                CommandPaletteCommand(
+                    id: commandId,
+                    rank: nextRank,
+                    title: String(localized: "commandPalette.reattachSession.title \(entry.label)", defaultValue: "Reattach: \(entry.label)"),
+                    subtitle: String(localized: "commandPalette.reattachSession.subtitle \(entryDestination)", defaultValue: "Remote session on \(entryDestination)"),
+                    shortcutHint: nil,
+                    kindLabel: String(localized: "commandPalette.kind.remoteSession", defaultValue: "Remote Session"),
+                    keywords: ["reattach", "remote", "session", "ssh", entry.label, entryDestination],
+                    dismissOnRun: true,
+                    action: {
+                        reattachOrFocusRemoteSession(groupID: entryGroupID, destination: entryDestination)
+                    }
+                )
+            )
+            nextRank += 1
+        }
+
         return commands
+    }
+
+    private func reattachOrFocusRemoteSession(groupID: UUID, destination: String) {
+        for ctx in commandPaletteSwitcherWindowContexts() {
+            for workspace in ctx.tabManager.tabs {
+                guard workspace.remoteConfiguration?.groupID == groupID else { continue }
+                ctx.tabManager.selectTab(workspace)
+                return
+            }
+        }
     }
 
     private func commandPaletteConfigActionID(for commandId: String) -> String? {

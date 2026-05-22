@@ -283,6 +283,9 @@
 		E30780000000000000000002 /* WorkspaceRemoteConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = E30780000000000000000001 /* WorkspaceRemoteConfiguration.swift */; };
 		C7B001000000000000000002 /* SessionBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7B001000000000000000001 /* SessionBridge.swift */; };
 		C7B002000000000000000002 /* PortForwardHandle.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7B002000000000000000001 /* PortForwardHandle.swift */; };
+		C7E001000000000000000002 /* RemoteSessionSyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7E001000000000000000001 /* RemoteSessionSyncCoordinator.swift */; };
+		C7E002000000000000000002 /* WorkspaceSSHIntegration.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7E002000000000000000001 /* WorkspaceSSHIntegration.swift */; };
+		C7E003000000000000000002 /* RemoteProxyTunnel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7E003000000000000000001 /* RemoteProxyTunnel.swift */; };
 		D0C0D0C0D0C0D0C0D0C00001 /* RemoteLoopbackProxyAlias.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0C0D0C0D0C0D0C0D0C00002 /* RemoteLoopbackProxyAlias.swift */; };
 		D0C0D0C0D0C0D0C0D0C00003 /* RemoteLoopbackRuntimeBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0C0D0C0D0C0D0C0D0C00004 /* RemoteLoopbackRuntimeBridge.swift */; };
 		C0DE32470000000000000003 /* WorkspaceSurfaceIdentifierClipboardText.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE32470000000000000004 /* WorkspaceSurfaceIdentifierClipboardText.swift */; };
@@ -852,6 +855,9 @@
 		E30780000000000000000001 /* WorkspaceRemoteConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceRemoteConfiguration.swift; sourceTree = "<group>"; };
 		C7B001000000000000000001 /* SessionBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionBridge.swift; sourceTree = "<group>"; };
 		C7B002000000000000000001 /* PortForwardHandle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortForwardHandle.swift; sourceTree = "<group>"; };
+		C7E001000000000000000001 /* RemoteSessionSyncCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSessionSyncCoordinator.swift; sourceTree = "<group>"; };
+		C7E002000000000000000001 /* WorkspaceSSHIntegration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSSHIntegration.swift; sourceTree = "<group>"; };
+		C7E003000000000000000001 /* RemoteProxyTunnel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteProxyTunnel.swift; sourceTree = "<group>"; };
 		D0C0D0C0D0C0D0C0D0C00002 /* RemoteLoopbackProxyAlias.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteLoopbackProxyAlias.swift; sourceTree = "<group>"; };
 		D0C0D0C0D0C0D0C0D0C00004 /* RemoteLoopbackRuntimeBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteLoopbackRuntimeBridge.swift; sourceTree = "<group>"; };
 		E3309A06 /* Workspace+EqualizeSplitsSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Workspace+EqualizeSplitsSupport.swift"; sourceTree = "<group>"; };
@@ -1309,6 +1315,9 @@
 					E30780000000000000000001 /* WorkspaceRemoteConfiguration.swift */,
 					C7B001000000000000000001 /* SessionBridge.swift */,
 					C7B002000000000000000001 /* PortForwardHandle.swift */,
+					C7E001000000000000000001 /* RemoteSessionSyncCoordinator.swift */,
+					C7E002000000000000000001 /* WorkspaceSSHIntegration.swift */,
+					C7E003000000000000000001 /* RemoteProxyTunnel.swift */,
 					D0C0D0C0D0C0D0C0D0C00002 /* RemoteLoopbackProxyAlias.swift */,
 					D0C0D0C0D0C0D0C0D0C00004 /* RemoteLoopbackRuntimeBridge.swift */,
 					E3309A06 /* Workspace+EqualizeSplitsSupport.swift */,
@@ -2055,6 +2064,9 @@
 					E30780000000000000000002 /* WorkspaceRemoteConfiguration.swift in Sources */,
 					C7B001000000000000000002 /* SessionBridge.swift in Sources */,
 					C7B002000000000000000002 /* PortForwardHandle.swift in Sources */,
+					C7E001000000000000000002 /* RemoteSessionSyncCoordinator.swift in Sources */,
+					C7E002000000000000000002 /* WorkspaceSSHIntegration.swift in Sources */,
+					C7E003000000000000000002 /* RemoteProxyTunnel.swift in Sources */,
 					D0C0D0C0D0C0D0C0D0C00001 /* RemoteLoopbackProxyAlias.swift in Sources */,
 					D0C0D0C0D0C0D0C0D0C00003 /* RemoteLoopbackRuntimeBridge.swift in Sources */,
 					E3309A05 /* Workspace+EqualizeSplitsSupport.swift in Sources */,

@@ -11436,6 +11436,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let response = alert.runModal()
         guard response == .alertFirstButtonReturn else { return true }
         tabManager.setCustomTitle(tabId: tab.id, title: input.stringValue)
+        tab.renameRemoteSession(newLabel: input.stringValue)
         return true
     }
 

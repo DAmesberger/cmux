@@ -1,4 +1,8 @@
 import Foundation
+import OSLog
+import GhosttyKit
+
+private let log = Logger(subsystem: "com.cmux", category: "WorkspaceRemoteConfiguration")
 
 private enum WorkspaceRemoteSSHOptionFilter {
     private static let transientControlSocketKeys: Set<String> = [
@@ -36,6 +40,15 @@ private enum WorkspaceRemoteSSHOptionFilter {
         }
     }
 
+    static func optionValue(_ key: String, in option: String) -> String? {
+        let trimmed = option.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let parts = trimmed.split(maxSplits: 1, whereSeparator: { $0 == "=" || $0.isWhitespace })
+        guard parts.count == 2 else { return nil }
+        guard parts[0].lowercased() == key.lowercased() else { return nil }
+        return String(parts[1])
+    }
+
     private static func optionKey(_ option: String) -> String? {
         let trimmed = option.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -47,87 +60,60 @@ private enum WorkspaceRemoteSSHOptionFilter {
     }
 }
 
-nonisolated enum WorkspaceRemoteTransport: String, Codable, Equatable, Sendable {
-    case ssh
-    case websocket
-}
-
 nonisolated struct SessionRemoteWorkspaceSnapshot: Codable, Equatable, Sendable {
-    var transport: WorkspaceRemoteTransport
     var destination: String
     var port: Int?
     var identityFile: String?
     var sshOptions: [String]
-    var skipDaemonBootstrap: Bool?
-}
-
-struct WorkspaceRemoteWebSocketDaemonEndpoint: Equatable {
-    let url: String
-    let headers: [String: String]
-    let token: String
-    let sessionId: String
-    let expiresAtUnix: Int64
-
-    var proxyBrokerKeyComponent: String {
-        [
-            url.trimmingCharacters(in: .whitespacesAndNewlines),
-            sessionId.trimmingCharacters(in: .whitespacesAndNewlines),
-            String(expiresAtUnix),
-        ]
-            .joined(separator: "\u{1f}")
-    }
+    var groupID: UUID?
+    var keepaliveIntervalMs: UInt32?
+    var maxReconnectAttempts: UInt32?
+    var reconnectIntervalMs: UInt32?
+    var sessionColor: Int8?
+    var sessionLabel: String?
 }
 
 struct WorkspaceRemoteConfiguration: Equatable {
-    let transport: WorkspaceRemoteTransport
     let destination: String
     let port: Int?
     let identityFile: String?
     let sshOptions: [String]
-    let localProxyPort: Int?
-    let relayPort: Int?
-    let relayID: String?
-    let relayToken: String?
-    let localSocketPath: String?
-    let terminalStartupCommand: String?
-    let foregroundAuthToken: String?
-    let daemonWebSocketEndpoint: WorkspaceRemoteWebSocketDaemonEndpoint?
-    /// True for cloud-VM remotes (Freestyle snapshots) where cmuxd-remote is pre-baked in
-    /// the image and started via systemd. Skip the upload+exec bootstrap entirely and synthesize
-    /// a `DaemonHello`. Reverse-relay still stays off, but SSH-backed VM workspaces can talk to
-    /// the baked daemon through an SSH local forward to `/run/cmuxd-remote.sock`.
-    let skipDaemonBootstrap: Bool
+    /// Stable group identity for the remote session. Generated on first connection;
+    /// persisted so the same daemon session reattaches across cmux restarts.
+    let groupID: UUID
+    let keepaliveIntervalMs: UInt32
+    let maxReconnectAttempts: UInt32
+    let reconnectIntervalMs: UInt32
+    let hostKeyPolicy: Ghostty.HostKeyHandler
+    /// Color slot from the daemon session (-1 = none, 0-7 = palette slot).
+    var sessionColor: Int8
+    /// Daemon-side session label. Seeds customTitle on workspace creation.
+    var sessionLabel: String?
 
     init(
-        transport: WorkspaceRemoteTransport = .ssh,
         destination: String,
         port: Int?,
         identityFile: String?,
         sshOptions: [String],
-        localProxyPort: Int?,
-        relayPort: Int?,
-        relayID: String?,
-        relayToken: String?,
-        localSocketPath: String?,
-        terminalStartupCommand: String?,
-        foregroundAuthToken: String? = nil,
-        daemonWebSocketEndpoint: WorkspaceRemoteWebSocketDaemonEndpoint? = nil,
-        skipDaemonBootstrap: Bool = false
+        groupID: UUID = UUID(),
+        keepaliveIntervalMs: UInt32 = 15000,
+        maxReconnectAttempts: UInt32 = 0,
+        reconnectIntervalMs: UInt32 = 1000,
+        hostKeyPolicy: Ghostty.HostKeyHandler = .tofu,
+        sessionColor: Int8 = -1,
+        sessionLabel: String? = nil
     ) {
-        self.transport = transport
         self.destination = destination
         self.port = port
         self.identityFile = identityFile
         self.sshOptions = sshOptions
-        self.localProxyPort = localProxyPort
-        self.relayPort = relayPort
-        self.relayID = relayID
-        self.relayToken = relayToken
-        self.localSocketPath = localSocketPath
-        self.terminalStartupCommand = terminalStartupCommand
-        self.foregroundAuthToken = foregroundAuthToken
-        self.daemonWebSocketEndpoint = daemonWebSocketEndpoint
-        self.skipDaemonBootstrap = skipDaemonBootstrap
+        self.groupID = groupID
+        self.keepaliveIntervalMs = keepaliveIntervalMs
+        self.maxReconnectAttempts = maxReconnectAttempts
+        self.reconnectIntervalMs = reconnectIntervalMs
+        self.hostKeyPolicy = hostKeyPolicy
+        self.sessionColor = sessionColor
+        self.sessionLabel = sessionLabel
     }
 
     var displayTarget: String {
@@ -135,36 +121,49 @@ struct WorkspaceRemoteConfiguration: Equatable {
         return "\(destination):\(port)"
     }
 
-    var proxyBrokerTransportKey: String {
-        let normalizedTransport = transport.rawValue
-        let normalizedBootstrapMode = skipDaemonBootstrap ? "vm-baked" : "bootstrap"
-        let normalizedDestination = destination.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalizedPort = port.map(String.init) ?? ""
-        let normalizedIdentity = WorkspaceRemoteSSHOptionFilter.normalizedIdentityPath(identityFile) ?? ""
-        let normalizedLocalProxyPort = localProxyPort.map(String.init) ?? ""
-        let normalizedOptions = Self.proxyBrokerSSHOptions(sshOptions).joined(separator: "\u{1f}")
-        let normalizedWebSocketDaemon = daemonWebSocketEndpoint?.proxyBrokerKeyComponent ?? ""
-        return [
-            normalizedTransport,
-            normalizedBootstrapMode,
-            normalizedDestination,
-            normalizedPort,
-            normalizedIdentity,
-            normalizedOptions,
-            normalizedLocalProxyPort,
-            normalizedWebSocketDaemon,
-        ]
-            .joined(separator: "\u{1e}")
-    }
+    func ghosttyConfig() -> Ghostty.SSHConnection.Config {
+        var target = destination
+        if let port { target += ":\(port)" }
 
-    private static func proxyBrokerSSHOptions(_ options: [String]) -> [String] {
-        WorkspaceRemoteSSHOptionFilter.durableOptions(options)
+        let jump = sshOptions.compactMap { option -> String? in
+            WorkspaceRemoteSSHOptionFilter.optionValue("ProxyJump", in: option)
+        }.first ?? ""
+
+        let resolvedIdentity: String
+        if let explicit = WorkspaceRemoteSSHOptionFilter.normalizedIdentityPath(identityFile) {
+            resolvedIdentity = explicit
+        } else if let fromOptions = sshOptions.compactMap({ option -> String? in
+            WorkspaceRemoteSSHOptionFilter.optionValue("IdentityFile", in: option)
+        }).first {
+            resolvedIdentity = WorkspaceRemoteSSHOptionFilter.normalizedIdentityPath(fromOptions) ?? fromOptions
+        } else {
+            resolvedIdentity = ""
+        }
+
+        for option in sshOptions {
+            let trimmed = option.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let keyLower = trimmed
+                .split(whereSeparator: { $0 == "=" || $0.isWhitespace })
+                .first
+                .map { String($0).lowercased() } ?? ""
+            guard keyLower != "proxyjump", keyLower != "identityfile" else { continue }
+            log.info("SSH option dropped (not supported by libghostty): \(trimmed, privacy: .public)")
+        }
+
+        return Ghostty.SSHConnection.Config(
+            target: target,
+            jump: jump,
+            identityFile: resolvedIdentity,
+            keepaliveIntervalMs: keepaliveIntervalMs,
+            maxReconnectAttempts: maxReconnectAttempts,
+            reconnectIntervalMs: reconnectIntervalMs
+        )
     }
 }
 
 extension SessionRemoteWorkspaceSnapshot {
     func workspaceConfiguration() -> WorkspaceRemoteConfiguration? {
-        guard transport == .ssh else { return nil }
         let normalizedDestination = destination.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedDestination.isEmpty else { return nil }
         let normalizedPort = port.flatMap { port in
@@ -172,46 +171,17 @@ extension SessionRemoteWorkspaceSnapshot {
         }
 
         return WorkspaceRemoteConfiguration(
-            transport: transport,
             destination: normalizedDestination,
             port: normalizedPort,
             identityFile: Self.normalizedIdentityPath(identityFile),
             sshOptions: Self.normalizedSSHOptions(sshOptions),
-            localProxyPort: nil,
-            relayPort: nil,
-            relayID: nil,
-            relayToken: nil,
-            localSocketPath: nil,
-            terminalStartupCommand: sshReconnectCommand(
-                destination: normalizedDestination,
-                port: normalizedPort
-            ),
-            foregroundAuthToken: nil,
-            daemonWebSocketEndpoint: nil,
-            skipDaemonBootstrap: skipDaemonBootstrap == true
+            groupID: groupID ?? UUID(),
+            keepaliveIntervalMs: keepaliveIntervalMs ?? 15000,
+            maxReconnectAttempts: maxReconnectAttempts ?? 0,
+            reconnectIntervalMs: reconnectIntervalMs ?? 1000,
+            sessionColor: sessionColor ?? -1,
+            sessionLabel: sessionLabel
         )
-    }
-
-    private func sshReconnectCommand(
-        destination normalizedDestination: String,
-        port normalizedPort: Int?
-    ) -> String? {
-        var arguments = ["ssh"]
-        if let normalizedPort {
-            arguments += ["-p", String(normalizedPort)]
-        }
-        if let identityFile = Self.normalizedIdentityPath(identityFile) {
-            arguments += ["-i", identityFile]
-        }
-        let normalizedOptions = Self.normalizedSSHOptions(sshOptions)
-        for option in normalizedOptions {
-            arguments += ["-o", option]
-        }
-        if !Self.hasSSHOptionKey(normalizedOptions, key: "RequestTTY") {
-            arguments.append("-tt")
-        }
-        arguments.append(normalizedDestination)
-        return arguments.map(Self.shellQuote).joined(separator: " ")
     }
 
     private static func normalizedIdentityPath(_ value: String?) -> String? {
@@ -221,33 +191,24 @@ extension SessionRemoteWorkspaceSnapshot {
     private static func normalizedSSHOptions(_ options: [String]) -> [String] {
         WorkspaceRemoteSSHOptionFilter.durableOptions(options)
     }
-
-    private static func hasSSHOptionKey(_ options: [String], key: String) -> Bool {
-        WorkspaceRemoteSSHOptionFilter.hasOptionKey(options, key: key)
-    }
-
-    private static func shellQuote(_ value: String) -> String {
-        let safePattern = "^[A-Za-z0-9_@%+=:,./-]+$"
-        if value.range(of: safePattern, options: .regularExpression) != nil {
-            return value
-        }
-        return "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
-    }
 }
 
 extension WorkspaceRemoteConfiguration {
     func sessionSnapshot() -> SessionRemoteWorkspaceSnapshot? {
-        guard transport == .ssh else { return nil }
         let normalizedDestination = destination.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedDestination.isEmpty else { return nil }
 
         return SessionRemoteWorkspaceSnapshot(
-            transport: transport,
             destination: normalizedDestination,
             port: port,
             identityFile: WorkspaceRemoteSSHOptionFilter.normalizedIdentityPath(identityFile),
             sshOptions: WorkspaceRemoteSSHOptionFilter.durableOptions(sshOptions),
-            skipDaemonBootstrap: skipDaemonBootstrap
+            groupID: groupID,
+            keepaliveIntervalMs: keepaliveIntervalMs,
+            maxReconnectAttempts: maxReconnectAttempts,
+            reconnectIntervalMs: reconnectIntervalMs,
+            sessionColor: sessionColor,
+            sessionLabel: sessionLabel
         )
     }
 }
