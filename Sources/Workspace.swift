@@ -4587,6 +4587,7 @@ final class Workspace: Identifiable, ObservableObject {
     }
 
     func disconnectRemoteConnection(clearConfiguration: Bool = false) {
+        stopRemoteProxyTunnel()
         let previousIntegration = sshIntegration
         sshIntegration = nil
         sshStateObserverTask?.cancel()
@@ -4625,10 +4626,12 @@ final class Workspace: Identifiable, ObservableObject {
             remoteConnectionState = .connected
             remoteConnectionDetail = nil
             statusEntries.removeValue(forKey: Self.remoteErrorStatusKey)
+            startRemoteProxyTunnel()
         case .connecting:
             remoteConnectionState = .connecting
         case .reconnecting:
             remoteConnectionState = .reconnecting
+            stopRemoteProxyTunnel()
         case .failed(let failure):
             remoteConnectionState = .error
             let message = failure.message ?? "SSH connection failed"
@@ -4639,8 +4642,10 @@ final class Workspace: Identifiable, ObservableObject {
                 icon: "network.slash",
                 timestamp: Date()
             )
+            stopRemoteProxyTunnel()
         case .disconnected:
             remoteConnectionState = .disconnected
+            stopRemoteProxyTunnel()
         default:
             break
         }
