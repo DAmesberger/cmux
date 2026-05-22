@@ -281,6 +281,8 @@
 		D7AB3605C10DEF0000000003 /* WorkspaceCloseTabsBatching.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7AB3605C10DEF0000000004 /* WorkspaceCloseTabsBatching.swift */; };
 		C3744E010000000000000001 /* Workspace+PanelLifecycle.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3744E020000000000000001 /* Workspace+PanelLifecycle.swift */; };
 		E30780000000000000000002 /* WorkspaceRemoteConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = E30780000000000000000001 /* WorkspaceRemoteConfiguration.swift */; };
+		C7B001000000000000000002 /* SessionBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7B001000000000000000001 /* SessionBridge.swift */; };
+		C7B002000000000000000002 /* PortForwardHandle.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7B002000000000000000001 /* PortForwardHandle.swift */; };
 		D0C0D0C0D0C0D0C0D0C00001 /* RemoteLoopbackProxyAlias.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0C0D0C0D0C0D0C0D0C00002 /* RemoteLoopbackProxyAlias.swift */; };
 		D0C0D0C0D0C0D0C0D0C00003 /* RemoteLoopbackRuntimeBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0C0D0C0D0C0D0C0D0C00004 /* RemoteLoopbackRuntimeBridge.swift */; };
 		C0DE32470000000000000003 /* WorkspaceSurfaceIdentifierClipboardText.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE32470000000000000004 /* WorkspaceSurfaceIdentifierClipboardText.swift */; };
@@ -848,6 +850,8 @@
 		D7AB3605C10DEF0000000004 /* WorkspaceCloseTabsBatching.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceCloseTabsBatching.swift; sourceTree = "<group>"; };
 		C3744E020000000000000001 /* Workspace+PanelLifecycle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Workspace+PanelLifecycle.swift"; sourceTree = "<group>"; };
 		E30780000000000000000001 /* WorkspaceRemoteConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceRemoteConfiguration.swift; sourceTree = "<group>"; };
+		C7B001000000000000000001 /* SessionBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionBridge.swift; sourceTree = "<group>"; };
+		C7B002000000000000000001 /* PortForwardHandle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortForwardHandle.swift; sourceTree = "<group>"; };
 		D0C0D0C0D0C0D0C0D0C00002 /* RemoteLoopbackProxyAlias.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteLoopbackProxyAlias.swift; sourceTree = "<group>"; };
 		D0C0D0C0D0C0D0C0D0C00004 /* RemoteLoopbackRuntimeBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteLoopbackRuntimeBridge.swift; sourceTree = "<group>"; };
 		E3309A06 /* Workspace+EqualizeSplitsSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Workspace+EqualizeSplitsSupport.swift"; sourceTree = "<group>"; };
@@ -1303,6 +1307,8 @@
 					D7AB3605C10DEF0000000004 /* WorkspaceCloseTabsBatching.swift */,
 					C3744E020000000000000001 /* Workspace+PanelLifecycle.swift */,
 					E30780000000000000000001 /* WorkspaceRemoteConfiguration.swift */,
+					C7B001000000000000000001 /* SessionBridge.swift */,
+					C7B002000000000000000001 /* PortForwardHandle.swift */,
 					D0C0D0C0D0C0D0C0D0C00002 /* RemoteLoopbackProxyAlias.swift */,
 					D0C0D0C0D0C0D0C0D0C00004 /* RemoteLoopbackRuntimeBridge.swift */,
 					E3309A06 /* Workspace+EqualizeSplitsSupport.swift */,
@@ -2047,6 +2053,8 @@
 					D7AB3605C10DEF0000000003 /* WorkspaceCloseTabsBatching.swift in Sources */,
 					C3744E010000000000000001 /* Workspace+PanelLifecycle.swift in Sources */,
 					E30780000000000000000002 /* WorkspaceRemoteConfiguration.swift in Sources */,
+					C7B001000000000000000002 /* SessionBridge.swift in Sources */,
+					C7B002000000000000000002 /* PortForwardHandle.swift in Sources */,
 					D0C0D0C0D0C0D0C0D0C00001 /* RemoteLoopbackProxyAlias.swift in Sources */,
 					D0C0D0C0D0C0D0C0D0C00003 /* RemoteLoopbackRuntimeBridge.swift in Sources */,
 					E3309A05 /* Workspace+EqualizeSplitsSupport.swift in Sources */,
