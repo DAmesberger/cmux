@@ -4729,6 +4729,11 @@ final class Workspace: Identifiable, ObservableObject {
         sshIntegration?.renameRemoteSession(groupID: cfg.groupID, newLabel: newLabel)
     }
 
+    func killRemoteSession() {
+        guard let cfg = remoteConfiguration else { return }
+        sshIntegration?.killRemoteSession(groupID: cfg.groupID)
+    }
+
 
 
 
