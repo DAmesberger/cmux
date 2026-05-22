@@ -4534,6 +4534,32 @@ class GhosttyApp {
                 }
                 return true
             }
+
+        case GHOSTTY_ACTION_SSH_CREATE_SESSION,
+             GHOSTTY_ACTION_SSH_SESSION_ATTACH,
+             GHOSTTY_ACTION_SSH_RENAME_SESSION,
+             GHOSTTY_ACTION_SSH_DELETE_SESSION,
+             GHOSTTY_ACTION_SSH_TOGGLE_SIZE_MODE,
+             GHOSTTY_ACTION_SSH_MANAGE_SESSION:
+            let workspaceID = callbackTabId ?? surfaceView.tabId
+            return performOnMain {
+                let name: Notification.Name
+                switch action.tag {
+                case GHOSTTY_ACTION_SSH_CREATE_SESSION:   name = SSHActionNotification.createSession
+                case GHOSTTY_ACTION_SSH_SESSION_ATTACH:   name = SSHActionNotification.sessionAttach
+                case GHOSTTY_ACTION_SSH_RENAME_SESSION:   name = SSHActionNotification.renameSession
+                case GHOSTTY_ACTION_SSH_DELETE_SESSION:   name = SSHActionNotification.deleteSession
+                case GHOSTTY_ACTION_SSH_TOGGLE_SIZE_MODE: name = SSHActionNotification.toggleSizeMode
+                default:                                  name = SSHActionNotification.manageSession
+                }
+                var userInfo: [AnyHashable: Any] = [:]
+                if let id = workspaceID {
+                    userInfo[SSHActionNotification.workspaceIDKey] = id
+                }
+                NotificationCenter.default.post(name: name, object: nil, userInfo: userInfo)
+                return true
+            }
+
         default:
             return false
         }
