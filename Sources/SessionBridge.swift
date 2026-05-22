@@ -22,6 +22,10 @@ final class SessionBridge {
     /// Called with each chunk of PTY bytes that arrives from the remote shell.
     var onOutput: (([UInt8]) -> Void)?
 
+    /// Called once when the channel is live and the daemon has accepted the
+    /// surface attachment. Safe to start sending keystrokes after this fires.
+    var onReady: (() -> Void)?
+
     /// Called exactly once when the channel closes (normal exit, transport
     /// drop, or explicit close). After this fires the bridge is dead;
     /// discard and do not reuse.
@@ -68,13 +72,18 @@ final class SessionBridge {
             }
         }
 
-        // Watch for the closed event so the workspace can update its state.
+        // Watch for opened and closed events.
         let eventsChannel = self.channel
         Task { [weak self] in
             for await event in eventsChannel.events {
-                if case .closed(let reason, let message, _) = event {
-                    guard let self else { break }
+                guard let self else { break }
+                switch event {
+                case .opened:
+                    await MainActor.run { self.onReady?() }
+                case .closed(let reason, let message, _):
                     await MainActor.run { self.onClose?(reason, message) }
+                    return
+                default:
                     break
                 }
             }
