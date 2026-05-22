@@ -5727,7 +5727,7 @@ class TerminalController {
                 return
             }
 
-            workspace.notifyRemoteForegroundAuthenticationReady(token: foregroundAuthToken)
+            // foreground auth token path removed with daemon transport
             let windowId = v2ResolveWindowId(tabManager: owner)
             result = .ok([
                 "window_id": v2OrNull(windowId?.uuidString),
@@ -5882,12 +5882,7 @@ class TerminalController {
             }
 
             tab.surfaceTTYNames[surfaceId] = ttyName
-            if tab.isRemoteWorkspace {
-                tab.syncRemotePortScanTTYs()
-                _ = tab.applyPendingRemoteSurfacePortKickIfNeeded(to: surfaceId)
-            } else {
-                PortScanner.shared.registerTTY(workspaceId: workspaceId, panelId: surfaceId, ttyName: ttyName)
-            }
+            PortScanner.shared.registerTTY(workspaceId: workspaceId, panelId: surfaceId, ttyName: ttyName)
 
             result = .ok([
                 "workspace_id": workspaceId.uuidString,
@@ -6032,7 +6027,7 @@ class TerminalController {
                 "workspace_ref": v2Ref(kind: .workspace, uuid: workspaceId),
                 "surface_id": surfaceId.uuidString,
                 "surface_ref": v2Ref(kind: .surface, uuid: surfaceId),
-                "reason": reason.rawValue,
+
             ])
         }
 
@@ -18549,12 +18544,7 @@ class TerminalController {
                 tab.pruneSurfaceMetadata(validSurfaceIds: validSurfaceIds)
                 guard validSurfaceIds.contains(scope.panelId) else { return }
                 tab.surfaceTTYNames[scope.panelId] = ttyName
-                if tab.isRemoteWorkspace {
-                    tab.syncRemotePortScanTTYs()
-                    _ = tab.applyPendingRemoteSurfacePortKickIfNeeded(to: scope.panelId)
-                } else {
-                    PortScanner.shared.registerTTY(workspaceId: scope.workspaceId, panelId: scope.panelId, ttyName: ttyName)
-                }
+                PortScanner.shared.registerTTY(workspaceId: scope.workspaceId, panelId: scope.panelId, ttyName: ttyName)
             }
             return "OK"
         }
@@ -18593,12 +18583,7 @@ class TerminalController {
             }
 
             tab.surfaceTTYNames[surfaceId] = ttyName
-            if tab.isRemoteWorkspace {
-                tab.syncRemotePortScanTTYs()
-                _ = tab.applyPendingRemoteSurfacePortKickIfNeeded(to: surfaceId)
-            } else {
-                PortScanner.shared.registerTTY(workspaceId: tab.id, panelId: surfaceId, ttyName: ttyName)
-            }
+            PortScanner.shared.registerTTY(workspaceId: tab.id, panelId: surfaceId, ttyName: ttyName)
         }
         return result
     }

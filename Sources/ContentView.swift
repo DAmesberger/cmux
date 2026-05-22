@@ -6182,8 +6182,8 @@ struct ContentView: View {
                 CommandPaletteCommand(
                     id: commandId,
                     rank: nextRank,
-                    title: String(localized: "commandPalette.reattachSession.title \(entry.label)", defaultValue: "Reattach: \(entry.label)"),
-                    subtitle: String(localized: "commandPalette.reattachSession.subtitle \(entryDestination)", defaultValue: "Remote session on \(entryDestination)"),
+                    title: "Reattach: \(entry.label)",
+                    subtitle: "Remote session on \(entryDestination)",
                     shortcutHint: nil,
                     kindLabel: String(localized: "commandPalette.kind.remoteSession", defaultValue: "Remote Session"),
                     keywords: ["reattach", "remote", "session", "ssh", entry.label, entryDestination],

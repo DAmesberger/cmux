@@ -507,6 +507,12 @@
 		F5300000A1B2C3D4E5F60718 /* RovoDevSessionIndexTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5300001A1B2C3D4E5F60718 /* RovoDevSessionIndexTests.swift */; };
 		F5300002A1B2C3D4E5F60718 /* RovoDevTranscriptPreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5300003A1B2C3D4E5F60718 /* RovoDevTranscriptPreviewTests.swift */; };
 		F5310000A1B2C3D4E5F60718 /* RovoDevHookConfigTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5310001A1B2C3D4E5F60718 /* RovoDevHookConfigTests.swift */; };
+		A7SSH0000000000000000001 /* CallbackTrampoline.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7SSH0000000000000000002 /* CallbackTrampoline.swift */; };
+		A7SSH0000000000000000003 /* Channel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7SSH0000000000000000004 /* Channel.swift */; };
+		A7SSH0000000000000000005 /* Connection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7SSH0000000000000000006 /* Connection.swift */; };
+		A7SSH0000000000000000007 /* ConnectionState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7SSH0000000000000000008 /* ConnectionState.swift */; };
+		A7SSH0000000000000000009 /* Service.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7SSH0000000000000000010 /* Service.swift */; };
+		A7GST0000000000000000001 /* GhosttyPackageMeta.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7GST0000000000000000002 /* GhosttyPackageMeta.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1066,6 +1072,12 @@
 		F5300003A1B2C3D4E5F60718 /* RovoDevTranscriptPreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RovoDevTranscriptPreviewTests.swift; sourceTree = "<group>"; };
 		F5310001A1B2C3D4E5F60718 /* RovoDevHookConfigTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RovoDevHookConfigTests.swift; sourceTree = "<group>"; };
 		IC000002 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder; path = AppIcon.icon; sourceTree = "<group>"; };
+		A7SSH0000000000000000002 /* CallbackTrampoline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CallbackTrampoline.swift; path = ghostty/macos/Sources/Ghostty/SSH/CallbackTrampoline.swift; sourceTree = SOURCE_ROOT; };
+		A7SSH0000000000000000004 /* Channel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Channel.swift; path = ghostty/macos/Sources/Ghostty/SSH/Channel.swift; sourceTree = SOURCE_ROOT; };
+		A7SSH0000000000000000006 /* Connection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Connection.swift; path = ghostty/macos/Sources/Ghostty/SSH/Connection.swift; sourceTree = SOURCE_ROOT; };
+		A7SSH0000000000000000008 /* ConnectionState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ConnectionState.swift; path = ghostty/macos/Sources/Ghostty/SSH/ConnectionState.swift; sourceTree = SOURCE_ROOT; };
+		A7SSH0000000000000000010 /* Service.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Service.swift; path = ghostty/macos/Sources/Ghostty/SSH/Service.swift; sourceTree = SOURCE_ROOT; };
+		A7GST0000000000000000002 /* GhosttyPackageMeta.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = GhosttyPackageMeta.swift; path = ghostty/macos/Sources/Ghostty/GhosttyPackageMeta.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -1319,6 +1331,12 @@
 					C7B002000000000000000001 /* PortForwardHandle.swift */,
 					C7E001000000000000000001 /* RemoteSessionSyncCoordinator.swift */,
 					C7E002000000000000000001 /* WorkspaceSSHIntegration.swift */,
+								A7GST0000000000000000002 /* GhosttyPackageMeta.swift */,
+A7SSH0000000000000000002 /* CallbackTrampoline.swift */,
+				A7SSH0000000000000000004 /* Channel.swift */,
+				A7SSH0000000000000000006 /* Connection.swift */,
+				A7SSH0000000000000000008 /* ConnectionState.swift */,
+				A7SSH0000000000000000010 /* Service.swift */,
 					C7E003000000000000000001 /* RemoteProxyTunnel.swift */,
 					C7E004000000000000000001 /* SSHActionNotifications.swift */,
 					D0C0D0C0D0C0D0C0D0C00002 /* RemoteLoopbackProxyAlias.swift */,
@@ -2069,6 +2087,12 @@
 					C7B002000000000000000002 /* PortForwardHandle.swift in Sources */,
 					C7E001000000000000000002 /* RemoteSessionSyncCoordinator.swift in Sources */,
 					C7E002000000000000000002 /* WorkspaceSSHIntegration.swift in Sources */,
+								A7GST0000000000000000001 /* GhosttyPackageMeta.swift in Sources */,
+A7SSH0000000000000000001 /* CallbackTrampoline.swift in Sources */,
+				A7SSH0000000000000000003 /* Channel.swift in Sources */,
+				A7SSH0000000000000000005 /* Connection.swift in Sources */,
+				A7SSH0000000000000000007 /* ConnectionState.swift in Sources */,
+				A7SSH0000000000000000009 /* Service.swift in Sources */,
 					C7E003000000000000000002 /* RemoteProxyTunnel.swift in Sources */,
 					C7E004000000000000000002 /* SSHActionNotifications.swift in Sources */,
 					D0C0D0C0D0C0D0C0D0C00001 /* RemoteLoopbackProxyAlias.swift in Sources */,

@@ -4561,7 +4561,7 @@ final class Workspace: Identifiable, ObservableObject {
         applyBrowserRemoteWorkspaceStatusToPanels()
 
         do {
-            let appHandle = AppDelegate.shared?.ghosttyApp?.handle
+            let appHandle = GhosttyApp.shared.app
             let integration = try WorkspaceSSHIntegration(config: configuration, app: appHandle)
             sshIntegration = integration
 

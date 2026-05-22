@@ -74,6 +74,20 @@ nonisolated struct SessionRemoteWorkspaceSnapshot: Codable, Equatable, Sendable 
 }
 
 struct WorkspaceRemoteConfiguration: Equatable {
+    static func == (lhs: WorkspaceRemoteConfiguration, rhs: WorkspaceRemoteConfiguration) -> Bool {
+        lhs.destination == rhs.destination &&
+        lhs.port == rhs.port &&
+        lhs.identityFile == rhs.identityFile &&
+        lhs.sshOptions == rhs.sshOptions &&
+        lhs.groupID == rhs.groupID &&
+        lhs.keepaliveIntervalMs == rhs.keepaliveIntervalMs &&
+        lhs.maxReconnectAttempts == rhs.maxReconnectAttempts &&
+        lhs.reconnectIntervalMs == rhs.reconnectIntervalMs &&
+        lhs.sessionColor == rhs.sessionColor &&
+        lhs.sessionLabel == rhs.sessionLabel
+        // hostKeyPolicy excluded: .interactive case contains a non-Equatable closure
+    }
+
     let destination: String
     let port: Int?
     let identityFile: String?

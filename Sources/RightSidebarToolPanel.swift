@@ -168,8 +168,7 @@ final class RightSidebarToolPanel: Panel, ObservableObject {
         store.showHiddenFiles = true
 
         if workspace.isRemoteWorkspace {
-            guard let configuration = workspace.remoteConfiguration,
-                  configuration.transport == .ssh else {
+            guard let configuration = workspace.remoteConfiguration else {
                 store.applyWorkspaceRoot(.none)
                 return
             }
