@@ -1115,6 +1115,8 @@ struct ContentView: View {
     @State private var commandPaletteRestoreTimeoutWorkItem: DispatchWorkItem?
     @State private var commandPalettePendingTextSelectionBehavior: CommandPaletteTextSelectionBehavior?
     @State private var commandPaletteSearchTask: Task<Void, Never>?
+    @State private var commandPaletteRemoteSessionLoadTask: Task<Void, Never>?
+    @State private var commandPaletteRemoteSessionEntries: [RemoteSessionPaletteEntry] = []
     @State private var commandPaletteSearchRequestID: UInt64 = 0
     @State private var commandPaletteResolvedSearchRequestID: UInt64 = 0
     @State private var commandPaletteResolvedSearchScope: CommandPaletteListScope?
@@ -2487,7 +2489,7 @@ struct ContentView: View {
 
         if tab.isRemoteWorkspace {
             sessionIndexStore.setCurrentDirectoryIfChanged(nil)
-            guard let config = tab.remoteConfiguration, config.transport == .ssh else {
+            guard let config = tab.remoteConfiguration else {
                 fileExplorerStore.applyWorkspaceRoot(.none)
                 return
             }
