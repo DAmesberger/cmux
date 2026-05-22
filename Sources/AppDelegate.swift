@@ -819,11 +819,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         method_exchangeImplementations(originalMethod, swizzledMethod)
     }()
 
+    private let sshActionObserver = SSHActionObserver()
+
 #if DEBUG
     private var didSetupJumpUnreadUITest = false
     private var jumpUnreadFocusExpectation: (tabId: UUID, surfaceId: UUID)?
     private var jumpUnreadFocusObserver: NSObjectProtocol?
-    private let sshActionObserver = SSHActionObserver()
     private var didSetupTerminalCmdClickUITest = false
     private var didSetupGotoSplitUITest = false
     private var didSetupBonsplitTabDragUITest = false
