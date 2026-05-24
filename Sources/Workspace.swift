@@ -474,13 +474,24 @@ extension Workspace {
                 includeScrollback: includeScrollback,
                 allowFallbackScrollback: shouldPersistScrollback || allowDebugFallbackScrollback
             )
+            // Capture the daemon-side surface UUID for remote panels so a
+            // later restore can call `attachTerminal(groupID:surfaceID:)` and
+            // replay the existing PTY rather than spawning a fresh shell.
+            // Prefer the daemon-confirmed identity (set on `Event.opened`);
+            // fall back to the locally-assigned surface UUID if the service
+            // ack hasn't decoded yet — they agree by design.
+            let remoteSurfaceID: UUID? = {
+                guard let relay = remoteTerminalPTYRelays[panelId] else { return nil }
+                return relay.daemonIdentity?.surfaceID ?? relay.surfaceID
+            }()
             terminalSnapshot = SessionTerminalPanelSnapshot(
                 workingDirectory: directory,
                 scrollback: resolvedScrollback,
                 agent: effectiveRestorableAgent,
                 tmuxStartCommand: restorableTmuxStartCommand,
                 resumeBinding: resumeBinding,
-                wasAgentRunning: agentWasRunning
+                wasAgentRunning: agentWasRunning,
+                remoteSurfaceID: remoteSurfaceID
             )
             browserSnapshot = nil
             markdownSnapshot = nil
@@ -931,6 +942,11 @@ extension Workspace {
             let replayEnvironment = SessionScrollbackReplayStore.replayEnvironment(
                 for: shouldReplayScrollback ? snapshot.terminal?.scrollback : nil
             )
+            // Only honor a persisted daemon surface UUID when the workspace
+            // is remote — local restores must not reattach an SSH PTY.
+            let restoreRemoteSurfaceID = isRemoteWorkspace
+                ? snapshot.terminal?.remoteSurfaceID
+                : nil
             guard let terminalPanel = newTerminalSurface(
                 inPane: paneId,
                 focus: false,
@@ -938,7 +954,8 @@ extension Workspace {
                 initialCommand: restoredTmuxStartupScript?.path,
                 tmuxStartCommand: restoredTmuxStartCommand,
                 initialInput: restoredStartupInput,
-                startupEnvironment: replayEnvironment
+                startupEnvironment: replayEnvironment,
+                restoreRemoteSurfaceID: restoreRemoteSurfaceID
             ) else {
                 return nil
             }
@@ -4696,9 +4713,19 @@ final class Workspace: Identifiable, ObservableObject {
     /// so Ghostty spawns a tiny shell that pumps our PTY slave; once the
     /// panel is created, the caller invokes `attachRemoteTerminalRelay` to
     /// wire the SSH channel.
-    private func prepareRemoteTerminalPTYRelay() -> RemoteTerminalPTYRelay? {
+    ///
+    /// Pass `restoreRemoteSurfaceID` when restoring a session snapshot —
+    /// the persisted daemon-side surface UUID. The daemon will recognize
+    /// the surface_id on `attachTerminal(...)` and replay the existing
+    /// PTY's state (scrollback + cursor) rather than spawning a fresh
+    /// shell. Pass `nil` for a new session; the relay generates a fresh
+    /// surface UUID that the daemon promotes into its session table.
+    private func prepareRemoteTerminalPTYRelay(
+        restoreRemoteSurfaceID: UUID? = nil
+    ) -> RemoteTerminalPTYRelay? {
         guard shouldUseRemotePTYRelayForNewTerminals() else { return nil }
-        guard let relay = RemoteTerminalPTYRelay.make(surfaceID: UUID()) else {
+        let surfaceID = restoreRemoteSurfaceID ?? UUID()
+        guard let relay = RemoteTerminalPTYRelay.make(surfaceID: surfaceID) else {
             #if DEBUG
             cmuxDebugLog(
                 "remote.pty.allocFailed workspace=\(id.uuidString.prefix(5)) " +
@@ -4725,15 +4752,13 @@ final class Workspace: Identifiable, ObservableObject {
             relay.tearDown(reason: "no.integration")
             return
         }
-        // Default to 80x24 if we can't infer a viewport yet — the surface
-        // resize observer will deliver real dimensions shortly after the
-        // hosted view becomes visible.
-        let initialSize = Ghostty.TerminalSize(
-            rows: 24,
-            cols: 80,
-            widthPx: 0,
-            heightPx: 0
-        )
+        // Best-effort initial viewport. We prefer the live Ghostty surface
+        // dimensions when the surface is already created (split path), and
+        // fall back to 80x24 otherwise (new-tab path, where the surface is
+        // still being constructed). `observeRemoteTerminalFirstResize` then
+        // delivers the true viewport once the hosted view lays out.
+        let initialSize = currentTerminalSurfaceSize(forPanelId: panelId)
+            ?? Ghostty.TerminalSize(rows: 24, cols: 80, widthPx: 0, heightPx: 0)
         do {
             let bridge = try integration.attachTerminal(
                 groupID: configuration.groupID,
@@ -4741,13 +4766,34 @@ final class Workspace: Identifiable, ObservableObject {
                 size: initialSize,
                 label: label
             )
+            // Capture the daemon-authoritative identity when the channel
+            // opens so we can persist it on the next snapshot pass. The
+            // groupID it reports is the workspace-level group (matches
+            // `configuration.groupID`); the surfaceID is the daemon's
+            // record of this attachment, which is what we need to thread
+            // back through on reattach.
+            bridge.onOpenedDetails = { [weak self, weak relay] identity in
+                guard let self, let relay else { return }
+                relay.setDaemonIdentity(identity)
+                #if DEBUG
+                cmuxDebugLog(
+                    "remote.pty.identity workspace=\(self.id.uuidString.prefix(5)) " +
+                    "panel=\(panelId.uuidString.prefix(5)) " +
+                    "group=\(identity.groupID.uuidString.prefix(5)) " +
+                    "surface=\(identity.surfaceID.uuidString.prefix(5)) " +
+                    "historyRows=\(identity.historyRows)"
+                )
+                #endif
+            }
             relay.start(bridge: bridge)
             remoteTerminalPTYRelays[panelId] = relay
+            observeRemoteTerminalFirstResize(panelId: panelId)
             #if DEBUG
             cmuxDebugLog(
                 "remote.pty.attached workspace=\(id.uuidString.prefix(5)) " +
                 "panel=\(panelId.uuidString.prefix(5)) " +
-                "surface=\(relay.surfaceID.uuidString.prefix(5))"
+                "surface=\(relay.surfaceID.uuidString.prefix(5)) " +
+                "initialSize=\(initialSize.cols)x\(initialSize.rows)"
             )
             #endif
         } catch {
@@ -4759,6 +4805,73 @@ final class Workspace: Identifiable, ObservableObject {
             #endif
             relay.tearDown(reason: "attach.failed")
         }
+    }
+
+    /// Read the live Ghostty surface dimensions for `panelId`, if available.
+    /// Returns nil when the runtime surface has not yet been created (typical
+    /// for brand-new tabs that finish their first layout pass asynchronously).
+    private func currentTerminalSurfaceSize(forPanelId panelId: UUID) -> Ghostty.TerminalSize? {
+        guard let terminalPanel = panels[panelId] as? TerminalPanel,
+              let surface = terminalPanel.surface.surface else {
+            return nil
+        }
+        let size = ghostty_surface_size(surface)
+        guard size.rows > 0, size.columns > 0 else { return nil }
+        return Ghostty.TerminalSize(
+            rows: UInt16(clamping: Int(size.rows)),
+            cols: UInt16(clamping: Int(size.columns)),
+            widthPx: size.width_px,
+            heightPx: size.height_px
+        )
+    }
+
+    /// Subscribe to the next `terminalSurfaceDidBecomeReady` notification for
+    /// `panelId` and forward the real viewport to the remote PTY relay.
+    /// One-shot: the observer removes itself after firing. New-tab and split
+    /// paths post the notification once `ghostty_surface_set_size` has been
+    /// called inside `TerminalSurface.makeRuntimeSurface`, so this guarantees
+    /// the daemon side learns the truth on first layout.
+    private func observeRemoteTerminalFirstResize(panelId: UUID) {
+        // Capture the observer token in a class box so the @Sendable
+        // notification closure can read it without tripping the
+        // non-Sendable-capture warning on `NSObjectProtocol?`.
+        final class TokenBox: @unchecked Sendable {
+            var token: NSObjectProtocol?
+        }
+        let box = TokenBox()
+        box.token = NotificationCenter.default.addObserver(
+            forName: .terminalSurfaceDidBecomeReady,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            let notifiedSurfaceId = note.userInfo?["surfaceId"] as? UUID
+            guard notifiedSurfaceId == panelId else { return }
+            if let token = box.token {
+                NotificationCenter.default.removeObserver(token)
+                box.token = nil
+            }
+            Task { @MainActor [weak self] in
+                self?.deliverFirstRemoteTerminalResize(panelId: panelId)
+            }
+        }
+    }
+
+    private func deliverFirstRemoteTerminalResize(panelId: UUID) {
+        guard let relay = remoteTerminalPTYRelays[panelId] else { return }
+        guard let size = currentTerminalSurfaceSize(forPanelId: panelId) else { return }
+        relay.resize(
+            rows: size.rows,
+            cols: size.cols,
+            widthPx: size.widthPx,
+            heightPx: size.heightPx
+        )
+        #if DEBUG
+        cmuxDebugLog(
+            "remote.pty.firstResize workspace=\(id.uuidString.prefix(5)) " +
+            "panel=\(panelId.uuidString.prefix(5)) " +
+            "size=\(size.cols)x\(size.rows)"
+        )
+        #endif
     }
 
     /// Tear down the PTY relay for `panelId` if one exists. Called from
@@ -5418,7 +5531,8 @@ final class Workspace: Identifiable, ObservableObject {
         initialCommand: String? = nil,
         tmuxStartCommand: String? = nil,
         initialInput: String? = nil,
-        startupEnvironment: [String: String] = [:]
+        startupEnvironment: [String: String] = [:],
+        restoreRemoteSurfaceID: UUID? = nil
     ) -> TerminalPanel? {
         let shouldFocusNewTab = focus ?? (bonsplitController.focusedPaneId == paneId)
         let previousFocusedPanelId = focusedPanelId
@@ -5434,8 +5548,14 @@ final class Workspace: Identifiable, ObservableObject {
         // pair; the shell command Ghostty spawns redirects to that pair, and
         // the SessionBridge pumps bytes between the daemon's terminal channel
         // and the PTY master.
+        //
+        // M5: when restoring from a session snapshot, pass the persisted
+        // daemon surface UUID so the relay's surfaceID matches what the
+        // daemon already has on file — `attachTerminal` then replays the
+        // existing PTY's scrollback + cursor rather than spawning a fresh
+        // shell.
         let pendingRemotePTYRelay = (explicitInitialCommand == nil)
-            ? prepareRemoteTerminalPTYRelay()
+            ? prepareRemoteTerminalPTYRelay(restoreRemoteSurfaceID: restoreRemoteSurfaceID)
             : nil
         let pendingRemotePTYRelayCommand = pendingRemotePTYRelay?.surfaceCommand
         let startupCommand = explicitInitialCommand

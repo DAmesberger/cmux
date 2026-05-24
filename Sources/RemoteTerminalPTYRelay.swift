@@ -43,6 +43,13 @@ final class RemoteTerminalPTYRelay {
     /// it back into session snapshots without re-opening the bridge.
     let surfaceID: UUID
 
+    /// Daemon-authoritative session/surface identity recorded once the M3
+    /// service_ack is decoded by the bridge. Stable across the bridge's
+    /// lifetime and persisted in session snapshots so cmux restart can call
+    /// `attachTerminal(groupID:surfaceID:)` and replay the existing PTY's
+    /// scrollback + cursor.
+    private(set) var daemonIdentity: RemoteSurfaceIdentity?
+
     // MARK: PTY state
 
     /// Master-side fd owned by cmux. SSH bytes are written here; Ghostty
@@ -75,9 +82,11 @@ final class RemoteTerminalPTYRelay {
 
     /// Create the PTY pair and build the shell command Ghostty will run.
     ///
+    /// Pass a previously-persisted `surfaceID` to reattach an existing
+    /// daemon-side PTY; pass `UUID()` (the default) for a fresh session.
     /// Returns `nil` if `openpty()` fails — callers must fall back to the
     /// legacy local-shell behavior in that case.
-    static func make(surfaceID: UUID) -> RemoteTerminalPTYRelay? {
+    static func make(surfaceID: UUID = UUID()) -> RemoteTerminalPTYRelay? {
         var master: Int32 = -1
         var slave: Int32 = -1
         var name = [CChar](repeating: 0, count: Int(PATH_MAX))
@@ -127,6 +136,13 @@ final class RemoteTerminalPTYRelay {
     }
 
     // MARK: Public API
+
+    /// Record the daemon-side identity decoded from the M3 service_ack. The
+    /// workspace calls this from the bridge's `onOpenedDetails` callback;
+    /// safe to invoke multiple times (later values replace earlier ones).
+    func setDaemonIdentity(_ identity: RemoteSurfaceIdentity) {
+        daemonIdentity = identity
+    }
 
     /// Wire the relay to a live `SessionBridge`. Begins the master-fd read
     /// loop and forwards remote PTY output into the master fd so Ghostty

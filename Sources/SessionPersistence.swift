@@ -1045,6 +1045,14 @@ struct SessionTerminalPanelSnapshot: Codable, Sendable {
     /// Whether the agent process was actively running when this snapshot was captured.
     /// Nil means unknown (legacy snapshots); treated as true for backwards compatibility.
     var wasAgentRunning: Bool?
+    /// Daemon-side surface identity persisted from the M3 service_ack so cmux
+    /// restart can reattach to the same remote PTY (replaying the daemon's
+    /// scrollback + cursor) instead of opening a fresh shell on the host.
+    ///
+    /// Nil on legacy snapshots and on local panels. The companion group
+    /// identity lives on `SessionRemoteWorkspaceSnapshot.groupID` —
+    /// reattach requires both.
+    var remoteSurfaceID: UUID?
 
     init(
         workingDirectory: String? = nil,
@@ -1052,7 +1060,8 @@ struct SessionTerminalPanelSnapshot: Codable, Sendable {
         agent: SessionRestorableAgentSnapshot? = nil,
         tmuxStartCommand: String? = nil,
         resumeBinding: SurfaceResumeBindingSnapshot? = nil,
-        wasAgentRunning: Bool? = nil
+        wasAgentRunning: Bool? = nil,
+        remoteSurfaceID: UUID? = nil
     ) {
         self.workingDirectory = workingDirectory
         self.scrollback = scrollback
@@ -1060,6 +1069,7 @@ struct SessionTerminalPanelSnapshot: Codable, Sendable {
         self.tmuxStartCommand = tmuxStartCommand
         self.resumeBinding = resumeBinding
         self.wasAgentRunning = wasAgentRunning
+        self.remoteSurfaceID = remoteSurfaceID
     }
 }
 struct SessionBrowserPanelSnapshot: Codable, Sendable {

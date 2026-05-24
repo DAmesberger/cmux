@@ -1,5 +1,62 @@
 import Foundation
 
+/// Daemon-side identity for a remote terminal surface, decoded from the
+/// 36-byte service_ack payload libghostty delivers on `Event.opened`.
+///
+/// Wire format (matches `cmux_terminal_service_ack` packed by the M3 bridge
+/// in `ghostty/src/apprt/embedded/ssh_capi.zig`):
+///
+/// ```
+/// offset  size  field
+/// ------  ----  -----
+///   0     16    group_id   (RFC 4122 / big-endian byte order)
+///  16     16    surface_id (RFC 4122 / big-endian byte order)
+///  32      4    history_rows (little-endian u32)
+/// ```
+///
+/// Persisted in `SessionTerminalPanelSnapshot.remoteSurfaceID` so cmux
+/// restart can re-attach to the same daemon-side PTY.
+struct RemoteSurfaceIdentity: Equatable, Sendable {
+    let groupID: UUID
+    let surfaceID: UUID
+    let historyRows: UInt32
+
+    /// Decode the 36-byte service_ack buffer. Returns nil if `data` is the
+    /// wrong size — callers should treat that as a daemon protocol error
+    /// and fall back to `onReady` semantics only.
+    static func decode(_ data: Data) -> RemoteSurfaceIdentity? {
+        guard data.count == 36 else { return nil }
+        return data.withUnsafeBytes { raw -> RemoteSurfaceIdentity? in
+            guard let base = raw.baseAddress else { return nil }
+            let groupBytes = base.assumingMemoryBound(to: UInt8.self)
+            let surfaceBytes = groupBytes.advanced(by: 16)
+            let group = UUID(uuid: (
+                groupBytes[0],  groupBytes[1],  groupBytes[2],  groupBytes[3],
+                groupBytes[4],  groupBytes[5],  groupBytes[6],  groupBytes[7],
+                groupBytes[8],  groupBytes[9],  groupBytes[10], groupBytes[11],
+                groupBytes[12], groupBytes[13], groupBytes[14], groupBytes[15]
+            ))
+            let surface = UUID(uuid: (
+                surfaceBytes[0],  surfaceBytes[1],  surfaceBytes[2],  surfaceBytes[3],
+                surfaceBytes[4],  surfaceBytes[5],  surfaceBytes[6],  surfaceBytes[7],
+                surfaceBytes[8],  surfaceBytes[9],  surfaceBytes[10], surfaceBytes[11],
+                surfaceBytes[12], surfaceBytes[13], surfaceBytes[14], surfaceBytes[15]
+            ))
+            // history_rows is packed little-endian per the M3 C bridge.
+            let rowsPtr = surfaceBytes.advanced(by: 16)
+            let rowsLE = UInt32(rowsPtr[0])
+                | (UInt32(rowsPtr[1]) << 8)
+                | (UInt32(rowsPtr[2]) << 16)
+                | (UInt32(rowsPtr[3]) << 24)
+            return RemoteSurfaceIdentity(
+                groupID: group,
+                surfaceID: surface,
+                historyRows: rowsLE
+            )
+        }
+    }
+}
+
 /// Per-terminal-panel bridge over a `Ghostty.SSHChannel<Ghostty.TerminalService>`.
 ///
 /// One `SessionBridge` is created for each remote terminal panel. It owns the
@@ -25,6 +82,16 @@ final class SessionBridge {
     /// Called once when the channel is live and the daemon has accepted the
     /// surface attachment. Safe to start sending keystrokes after this fires.
     var onReady: (() -> Void)?
+
+    /// Called once with the decoded daemon-side identity, alongside `onReady`.
+    /// Provides the authoritative `groupID` and `surfaceID` the daemon
+    /// recorded for this attachment, so cmux can persist them in session
+    /// snapshots and reattach the same remote PTY across restarts.
+    ///
+    /// Fires only when the 36-byte service_ack decodes cleanly. On a
+    /// malformed ack `onReady` still fires but this callback does not — the
+    /// surface remains live but won't be persistable as a reattach target.
+    var onOpenedDetails: ((RemoteSurfaceIdentity) -> Void)?
 
     /// Called exactly once when the channel closes (normal exit, transport
     /// drop, or explicit close). After this fires the bridge is dead;
@@ -78,8 +145,14 @@ final class SessionBridge {
             for await event in eventsChannel.events {
                 guard let self else { break }
                 switch event {
-                case .opened:
-                    await MainActor.run { self.onReady?() }
+                case .opened(let serviceAck, _):
+                    let identity = RemoteSurfaceIdentity.decode(serviceAck)
+                    await MainActor.run {
+                        self.onReady?()
+                        if let identity {
+                            self.onOpenedDetails?(identity)
+                        }
+                    }
                 case .closed(let reason, let message, _):
                     await MainActor.run { self.onClose?(reason, message) }
                     return
