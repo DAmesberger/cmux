@@ -65,6 +65,7 @@
 		E3309A0B /* KeyboardShortcutSettingsEqualizeSplitsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3309A0C /* KeyboardShortcutSettingsEqualizeSplitsTests.swift */; };
 		A17110000000000000000001 /* KeyboardShortcutSpaceKeyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17110000000000000000002 /* KeyboardShortcutSpaceKeyTests.swift */; };
 		D3610B010000000000000001 /* AgentSessionAutoResumeSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3610B010000000000000002 /* AgentSessionAutoResumeSettingsTests.swift */; };
+		C7B0040000000000000000001 /* RemoteTerminalPTYRelayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7B0040000000000000000002 /* RemoteTerminalPTYRelayTests.swift */; };
 		C0DEF0A40000000000000001 /* CmuxConfigContextMenuTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEF0A40000000000000002 /* CmuxConfigContextMenuTests.swift */; };
 		D0B10000A1B2C3D4E5F60001 /* TerminalPaneDropTargetView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0B10001A1B2C3D4E5F60001 /* TerminalPaneDropTargetView.swift */; };
 		D0B10002A1B2C3D4E5F60001 /* BonsplitTabBarPassThrough.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0B10003A1B2C3D4E5F60001 /* BonsplitTabBarPassThrough.swift */; };
@@ -282,11 +283,14 @@
 		C3744E010000000000000001 /* Workspace+PanelLifecycle.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3744E020000000000000001 /* Workspace+PanelLifecycle.swift */; };
 		E30780000000000000000002 /* WorkspaceRemoteConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = E30780000000000000000001 /* WorkspaceRemoteConfiguration.swift */; };
 		C7B001000000000000000002 /* SessionBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7B001000000000000000001 /* SessionBridge.swift */; };
+		C7B003000000000000000002 /* RemoteTerminalPTYRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7B003000000000000000001 /* RemoteTerminalPTYRelay.swift */; };
 		C7B002000000000000000002 /* PortForwardHandle.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7B002000000000000000001 /* PortForwardHandle.swift */; };
 		C7E001000000000000000002 /* RemoteSessionSyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7E001000000000000000001 /* RemoteSessionSyncCoordinator.swift */; };
 		C7E002000000000000000002 /* WorkspaceSSHIntegration.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7E002000000000000000001 /* WorkspaceSSHIntegration.swift */; };
 		C7E003000000000000000002 /* RemoteProxyTunnel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7E003000000000000000001 /* RemoteProxyTunnel.swift */; };
 		C7E004000000000000000002 /* SSHActionNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7E004000000000000000001 /* SSHActionNotifications.swift */; };
+		C7E005000000000000000002 /* SSHConfigParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7E005000000000000000001 /* SSHConfigParser.swift */; };
+		C7E006000000000000000002 /* SSHConnectSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7E006000000000000000001 /* SSHConnectSheet.swift */; };
 		D0C0D0C0D0C0D0C0D0C00001 /* RemoteLoopbackProxyAlias.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0C0D0C0D0C0D0C0D0C00002 /* RemoteLoopbackProxyAlias.swift */; };
 		D0C0D0C0D0C0D0C0D0C00003 /* RemoteLoopbackRuntimeBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0C0D0C0D0C0D0C0D0C00004 /* RemoteLoopbackRuntimeBridge.swift */; };
 		C0DE32470000000000000003 /* WorkspaceSurfaceIdentifierClipboardText.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE32470000000000000004 /* WorkspaceSurfaceIdentifierClipboardText.swift */; };
@@ -652,6 +656,7 @@
 		E3309A0C /* KeyboardShortcutSettingsEqualizeSplitsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardShortcutSettingsEqualizeSplitsTests.swift; sourceTree = "<group>"; };
 		A17110000000000000000002 /* KeyboardShortcutSpaceKeyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardShortcutSpaceKeyTests.swift; sourceTree = "<group>"; };
 		D3610B010000000000000002 /* AgentSessionAutoResumeSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentSessionAutoResumeSettingsTests.swift; sourceTree = "<group>"; };
+		C7B0040000000000000000002 /* RemoteTerminalPTYRelayTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTerminalPTYRelayTests.swift; sourceTree = "<group>"; };
 		7E7E6EF344A568AC7FEE3715 /* cmuxUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = cmuxUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		818DBCD4AB69EB72573E8138 /* SidebarResizeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarResizeUITests.swift; sourceTree = "<group>"; };
 		970226F3C99D0D937CD00539 /* BrowserConfigTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserConfigTests.swift; sourceTree = "<group>"; };
@@ -861,11 +866,14 @@
 		C3744E020000000000000001 /* Workspace+PanelLifecycle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Workspace+PanelLifecycle.swift"; sourceTree = "<group>"; };
 		E30780000000000000000001 /* WorkspaceRemoteConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceRemoteConfiguration.swift; sourceTree = "<group>"; };
 		C7B001000000000000000001 /* SessionBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionBridge.swift; sourceTree = "<group>"; };
+		C7B003000000000000000001 /* RemoteTerminalPTYRelay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTerminalPTYRelay.swift; sourceTree = "<group>"; };
 		C7B002000000000000000001 /* PortForwardHandle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortForwardHandle.swift; sourceTree = "<group>"; };
 		C7E001000000000000000001 /* RemoteSessionSyncCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSessionSyncCoordinator.swift; sourceTree = "<group>"; };
 		C7E002000000000000000001 /* WorkspaceSSHIntegration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSSHIntegration.swift; sourceTree = "<group>"; };
 		C7E003000000000000000001 /* RemoteProxyTunnel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteProxyTunnel.swift; sourceTree = "<group>"; };
 		C7E004000000000000000001 /* SSHActionNotifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHActionNotifications.swift; sourceTree = "<group>"; };
+		C7E005000000000000000001 /* SSHConfigParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHConfigParser.swift; sourceTree = "<group>"; };
+		C7E006000000000000000001 /* SSHConnectSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHConnectSheet.swift; sourceTree = "<group>"; };
 		D0C0D0C0D0C0D0C0D0C00002 /* RemoteLoopbackProxyAlias.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteLoopbackProxyAlias.swift; sourceTree = "<group>"; };
 		D0C0D0C0D0C0D0C0D0C00004 /* RemoteLoopbackRuntimeBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteLoopbackRuntimeBridge.swift; sourceTree = "<group>"; };
 		E3309A06 /* Workspace+EqualizeSplitsSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Workspace+EqualizeSplitsSupport.swift"; sourceTree = "<group>"; };
@@ -1328,6 +1336,7 @@
 					C3744E020000000000000001 /* Workspace+PanelLifecycle.swift */,
 					E30780000000000000000001 /* WorkspaceRemoteConfiguration.swift */,
 					C7B001000000000000000001 /* SessionBridge.swift */,
+					C7B003000000000000000001 /* RemoteTerminalPTYRelay.swift */,
 					C7B002000000000000000001 /* PortForwardHandle.swift */,
 					C7E001000000000000000001 /* RemoteSessionSyncCoordinator.swift */,
 					C7E002000000000000000001 /* WorkspaceSSHIntegration.swift */,
@@ -1339,6 +1348,8 @@ A7SSH0000000000000000002 /* CallbackTrampoline.swift */,
 				A7SSH0000000000000000010 /* Service.swift */,
 					C7E003000000000000000001 /* RemoteProxyTunnel.swift */,
 					C7E004000000000000000001 /* SSHActionNotifications.swift */,
+					C7E005000000000000000001 /* SSHConfigParser.swift */,
+					C7E006000000000000000001 /* SSHConnectSheet.swift */,
 					D0C0D0C0D0C0D0C0D0C00002 /* RemoteLoopbackProxyAlias.swift */,
 					D0C0D0C0D0C0D0C0D0C00004 /* RemoteLoopbackRuntimeBridge.swift */,
 					E3309A06 /* Workspace+EqualizeSplitsSupport.swift */,
@@ -1592,6 +1603,7 @@ A7SSH0000000000000000002 /* CallbackTrampoline.swift */,
 					F5000001A1B2C3D4E5F60718 /* SessionPersistenceTests.swift */,
 					B35750000000000000000009 /* PiVaultAgentPersistenceTests.swift */,
 					D3610B010000000000000002 /* AgentSessionAutoResumeSettingsTests.swift */,
+					C7B0040000000000000000002 /* RemoteTerminalPTYRelayTests.swift */,
 					F5410001A1B2C3D4E5F60718 /* RestorableAgentHookProviderResumeTests.swift */,
 					F5410005A1B2C3D4E5F60718 /* RestorableAgentHookProviderHermesTests.swift */,
 					F5410003A1B2C3D4E5F60718 /* RestorableAgentNonInteractiveTests.swift */,
@@ -2084,6 +2096,7 @@ A7SSH0000000000000000002 /* CallbackTrampoline.swift */,
 					C3744E010000000000000001 /* Workspace+PanelLifecycle.swift in Sources */,
 					E30780000000000000000002 /* WorkspaceRemoteConfiguration.swift in Sources */,
 					C7B001000000000000000002 /* SessionBridge.swift in Sources */,
+					C7B003000000000000000002 /* RemoteTerminalPTYRelay.swift in Sources */,
 					C7B002000000000000000002 /* PortForwardHandle.swift in Sources */,
 					C7E001000000000000000002 /* RemoteSessionSyncCoordinator.swift in Sources */,
 					C7E002000000000000000002 /* WorkspaceSSHIntegration.swift in Sources */,
@@ -2095,6 +2108,8 @@ A7SSH0000000000000000001 /* CallbackTrampoline.swift in Sources */,
 				A7SSH0000000000000000009 /* Service.swift in Sources */,
 					C7E003000000000000000002 /* RemoteProxyTunnel.swift in Sources */,
 					C7E004000000000000000002 /* SSHActionNotifications.swift in Sources */,
+					C7E005000000000000000002 /* SSHConfigParser.swift in Sources */,
+					C7E006000000000000000002 /* SSHConnectSheet.swift in Sources */,
 					D0C0D0C0D0C0D0C0D0C00001 /* RemoteLoopbackProxyAlias.swift in Sources */,
 					D0C0D0C0D0C0D0C0D0C00003 /* RemoteLoopbackRuntimeBridge.swift in Sources */,
 					E3309A05 /* Workspace+EqualizeSplitsSupport.swift in Sources */,
@@ -2393,6 +2408,7 @@ A7SSH0000000000000000001 /* CallbackTrampoline.swift in Sources */,
 					F5000000A1B2C3D4E5F60718 /* SessionPersistenceTests.swift in Sources */,
 					B3575000000000000000000A /* PiVaultAgentPersistenceTests.swift in Sources */,
 					D3610B010000000000000001 /* AgentSessionAutoResumeSettingsTests.swift in Sources */,
+					C7B0040000000000000000001 /* RemoteTerminalPTYRelayTests.swift in Sources */,
 					F5410000A1B2C3D4E5F60718 /* RestorableAgentHookProviderResumeTests.swift in Sources */,
 					F5410004A1B2C3D4E5F60718 /* RestorableAgentHookProviderHermesTests.swift in Sources */,
 					F5410002A1B2C3D4E5F60718 /* RestorableAgentNonInteractiveTests.swift in Sources */,

@@ -2365,6 +2365,12 @@ final class Workspace: Identifiable, ObservableObject {
     @Published private(set) var activeRemoteTerminalSessionCount: Int = 0
     var surfaceTTYNames: [UUID: String] = [:]
     var sshIntegration: WorkspaceSSHIntegration?
+    /// Remote-terminal PTY relays keyed by the terminal panel id. M4
+    /// (libghostty SSH path) routes new remote terminal surfaces through a
+    /// cmux-owned PTY pair so libghostty can render bytes that originate in
+    /// the daemon's SSH terminal session. See `RemoteTerminalPTYRelay` for
+    /// the design write-up.
+    private var remoteTerminalPTYRelays: [UUID: RemoteTerminalPTYRelay] = [:]
     private var sshStateObserverTask: Task<Void, Never>?
     private var remoteProxyTunnel: RemoteProxyTunnel?
     private var remoteDetectedSurfaceIds: Set<UUID> = []
@@ -2922,7 +2928,7 @@ final class Workspace: Identifiable, ObservableObject {
         bonsplitController.tabContextMoveDestinationsProvider = { [weak self] tabId, _ in
             self?.bonsplitTabMoveDestinations(for: tabId) ?? []
         }
-        bonsplitController.onTabCloseRequest = { [weak self] tabId, _ in
+        bonsplitController.onTabCloseRequest = { [weak self] tabId, _, _ in
             self?.markExplicitClose(surfaceId: tabId)
         }
         bonsplitController.onTabZoomToggleRequest = { [weak self] tabId, _ in
@@ -4588,6 +4594,7 @@ final class Workspace: Identifiable, ObservableObject {
 
     func disconnectRemoteConnection(clearConfiguration: Bool = false) {
         stopRemoteProxyTunnel()
+        releaseAllRemoteTerminalPTYRelays(reason: "disconnect")
         let previousIntegration = sshIntegration
         sshIntegration = nil
         sshStateObserverTask?.cancel()
@@ -4665,6 +4672,111 @@ final class Workspace: Identifiable, ObservableObject {
         guard activeRemoteTerminalSurfaceIds.insert(panelId).inserted else { return }
         activeRemoteTerminalSessionCount = activeRemoteTerminalSurfaceIds.count
         applyPendingRemoteSurfaceTTYIfNeeded(to: panelId)
+    }
+
+    // MARK: - Remote terminal PTY relay (M4)
+
+    /// Returns true when new remote terminal surfaces should be wired through
+    /// the libghostty SSH path (PTY relay + SessionBridge) rather than the
+    /// legacy bash bootstrap. Falls back to legacy when the env-var escape
+    /// hatch `CMUX_SSH_USE_LEGACY_BASH=1` is set or when the SSH integration
+    /// hasn't reached `.connected` yet.
+    private func shouldUseRemotePTYRelayForNewTerminals() -> Bool {
+        guard isRemoteWorkspace else { return false }
+        if ProcessInfo.processInfo.environment["CMUX_SSH_USE_LEGACY_BASH"] == "1" {
+            return false
+        }
+        guard let integration = sshIntegration else { return false }
+        if case .connected = integration.connectionState { return true }
+        return false
+    }
+
+    /// Allocate a `RemoteTerminalPTYRelay` for an upcoming remote terminal
+    /// surface. The caller passes `relay.surfaceCommand` to `TerminalPanel`
+    /// so Ghostty spawns a tiny shell that pumps our PTY slave; once the
+    /// panel is created, the caller invokes `attachRemoteTerminalRelay` to
+    /// wire the SSH channel.
+    private func prepareRemoteTerminalPTYRelay() -> RemoteTerminalPTYRelay? {
+        guard shouldUseRemotePTYRelayForNewTerminals() else { return nil }
+        guard let relay = RemoteTerminalPTYRelay.make(surfaceID: UUID()) else {
+            #if DEBUG
+            cmuxDebugLog(
+                "remote.pty.allocFailed workspace=\(id.uuidString.prefix(5)) " +
+                "errno=\(errno)"
+            )
+            #endif
+            return nil
+        }
+        return relay
+    }
+
+    /// Attach `relay` to the SSH integration for the terminal `panelId`.
+    /// On success, stores the relay in `remoteTerminalPTYRelays` keyed by
+    /// `panelId`. On failure, tears the relay down and leaves the panel
+    /// running its placeholder shell command (which will exit quickly,
+    /// showing the user the channel-open error).
+    private func attachRemoteTerminalRelay(
+        _ relay: RemoteTerminalPTYRelay,
+        panelId: UUID,
+        label: String
+    ) {
+        guard let integration = sshIntegration,
+              let configuration = remoteConfiguration else {
+            relay.tearDown(reason: "no.integration")
+            return
+        }
+        // Default to 80x24 if we can't infer a viewport yet — the surface
+        // resize observer will deliver real dimensions shortly after the
+        // hosted view becomes visible.
+        let initialSize = Ghostty.TerminalSize(
+            rows: 24,
+            cols: 80,
+            widthPx: 0,
+            heightPx: 0
+        )
+        do {
+            let bridge = try integration.attachTerminal(
+                groupID: configuration.groupID,
+                surfaceID: relay.surfaceID,
+                size: initialSize,
+                label: label
+            )
+            relay.start(bridge: bridge)
+            remoteTerminalPTYRelays[panelId] = relay
+            #if DEBUG
+            cmuxDebugLog(
+                "remote.pty.attached workspace=\(id.uuidString.prefix(5)) " +
+                "panel=\(panelId.uuidString.prefix(5)) " +
+                "surface=\(relay.surfaceID.uuidString.prefix(5))"
+            )
+            #endif
+        } catch {
+            #if DEBUG
+            cmuxDebugLog(
+                "remote.pty.attachFailed workspace=\(id.uuidString.prefix(5)) " +
+                "panel=\(panelId.uuidString.prefix(5)) err=\(error)"
+            )
+            #endif
+            relay.tearDown(reason: "attach.failed")
+        }
+    }
+
+    /// Tear down the PTY relay for `panelId` if one exists. Called from
+    /// `discardClosedPanelLifecycleState` and the workspace-level remote
+    /// disconnect path.
+    func releaseRemoteTerminalPTYRelay(forPanelId panelId: UUID, reason: String) {
+        guard let relay = remoteTerminalPTYRelays.removeValue(forKey: panelId) else { return }
+        relay.tearDown(reason: reason)
+    }
+
+    /// Tear down every active relay (e.g. when the SSH connection is
+    /// explicitly torn down).
+    func releaseAllRemoteTerminalPTYRelays(reason: String) {
+        let relays = remoteTerminalPTYRelays
+        remoteTerminalPTYRelays.removeAll()
+        for (_, relay) in relays {
+            relay.tearDown(reason: reason)
+        }
     }
 
     func untrackRemoteTerminalSurface(_ panelId: UUID) {
@@ -5128,7 +5240,19 @@ final class Workspace: Identifiable, ObservableObject {
         let requestedInitialCommand = initialCommand?.trimmingCharacters(in: .whitespacesAndNewlines)
         let explicitInitialCommand = (requestedInitialCommand?.isEmpty == false) ? requestedInitialCommand : nil
         let remoteTerminalStartupCommand = remoteTerminalStartupCommand()
-        let startupCommand = explicitInitialCommand ?? remoteTerminalStartupCommand
+
+        // M4: prefer the libghostty SSH path when this is a remote workspace
+        // that's already connected. The relay must be opted-in only when the
+        // caller did not supply an explicit command — explicit commands are
+        // user-driven (e.g. a CLI `cmux split foo`) and should run locally.
+        let pendingRemotePTYRelay = (explicitInitialCommand == nil)
+            ? prepareRemoteTerminalPTYRelay()
+            : nil
+        let pendingRemotePTYRelayCommand = pendingRemotePTYRelay?.surfaceCommand
+        let startupCommand = explicitInitialCommand
+            ?? pendingRemotePTYRelayCommand
+            ?? remoteTerminalStartupCommand
+        let trackAsRemoteTerminal = pendingRemotePTYRelay != nil || remoteTerminalStartupCommand != nil
         // Hold the pane open after the remote session ends so the user can read the
         // "ssh exited …" message the startup script prints. Otherwise Ghostty silently
         // respawns a local login shell when the command exits (the PTY falls through
@@ -5188,8 +5312,15 @@ final class Workspace: Identifiable, ObservableObject {
         configureTerminalPanel(newPanel)
         panels[newPanel.id] = newPanel
         panelTitles[newPanel.id] = newPanel.displayTitle
-        if remoteTerminalStartupCommand != nil {
+        if trackAsRemoteTerminal {
             trackRemoteTerminalSurface(newPanel.id)
+        }
+        if let pendingRemotePTYRelay {
+            attachRemoteTerminalRelay(
+                pendingRemotePTYRelay,
+                panelId: newPanel.id,
+                label: title
+            )
         }
         seedTerminalInheritanceFontPoints(panelId: newPanel.id, configTemplate: inheritedConfig)
 #if DEBUG
@@ -5223,9 +5354,10 @@ final class Workspace: Identifiable, ObservableObject {
             panels.removeValue(forKey: newPanel.id)
             panelTitles.removeValue(forKey: newPanel.id)
             surfaceIdToPanelId.removeValue(forKey: newTab.id)
-            if remoteTerminalStartupCommand != nil {
+            if trackAsRemoteTerminal {
                 untrackRemoteTerminalSurface(newPanel.id)
             }
+            releaseRemoteTerminalPTYRelay(forPanelId: newPanel.id, reason: "splitPane.failed")
             terminalInheritanceFontPointsByPanelId.removeValue(forKey: newPanel.id)
             return nil
         }
@@ -5296,7 +5428,20 @@ final class Workspace: Identifiable, ObservableObject {
         let requestedInitialCommand = initialCommand?.trimmingCharacters(in: .whitespacesAndNewlines)
         let explicitInitialCommand = (requestedInitialCommand?.isEmpty == false) ? requestedInitialCommand : nil
         let remoteTerminalStartupCommand = remoteTerminalStartupCommand()
-        let startupCommand = explicitInitialCommand ?? remoteTerminalStartupCommand
+
+        // M4: when a remote workspace is `.connected` we route new terminal
+        // surfaces through the libghostty SSH path. The relay owns a PTY
+        // pair; the shell command Ghostty spawns redirects to that pair, and
+        // the SessionBridge pumps bytes between the daemon's terminal channel
+        // and the PTY master.
+        let pendingRemotePTYRelay = (explicitInitialCommand == nil)
+            ? prepareRemoteTerminalPTYRelay()
+            : nil
+        let pendingRemotePTYRelayCommand = pendingRemotePTYRelay?.surfaceCommand
+        let startupCommand = explicitInitialCommand
+            ?? pendingRemotePTYRelayCommand
+            ?? remoteTerminalStartupCommand
+        let trackAsRemoteTerminal = pendingRemotePTYRelay != nil || remoteTerminalStartupCommand != nil
         // See the comment at the other call site: hold the PTY open after the remote
         // command exits so the user sees the error rather than a silently-respawned
         // local login shell.
@@ -5321,8 +5466,15 @@ final class Workspace: Identifiable, ObservableObject {
         configureTerminalPanel(newPanel)
         panels[newPanel.id] = newPanel
         panelTitles[newPanel.id] = newPanel.displayTitle
-        if remoteTerminalStartupCommand != nil {
+        if trackAsRemoteTerminal {
             trackRemoteTerminalSurface(newPanel.id)
+        }
+        if let pendingRemotePTYRelay {
+            attachRemoteTerminalRelay(
+                pendingRemotePTYRelay,
+                panelId: newPanel.id,
+                label: title
+            )
         }
         seedTerminalInheritanceFontPoints(panelId: newPanel.id, configTemplate: inheritedConfig)
 
@@ -5337,9 +5489,10 @@ final class Workspace: Identifiable, ObservableObject {
         ) else {
             panels.removeValue(forKey: newPanel.id)
             panelTitles.removeValue(forKey: newPanel.id)
-            if remoteTerminalStartupCommand != nil {
+            if trackAsRemoteTerminal {
                 untrackRemoteTerminalSurface(newPanel.id)
             }
+            releaseRemoteTerminalPTYRelay(forPanelId: newPanel.id, reason: "createTab.failed")
             terminalInheritanceFontPointsByPanelId.removeValue(forKey: newPanel.id)
             return nil
         }
@@ -8233,7 +8386,17 @@ final class Workspace: Identifiable, ObservableObject {
     ) -> TerminalPanel? {
         var inheritedConfig = inheritedTerminalConfig(inPane: paneId)
         let requestedRemoteStartupCommand = remoteStartupCommand?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let startupCommand = requestedRemoteStartupCommand?.isEmpty == false ? requestedRemoteStartupCommand : nil
+        let legacyRemoteCommand = requestedRemoteStartupCommand?.isEmpty == false ? requestedRemoteStartupCommand : nil
+
+        // M4: prefer the libghostty SSH path when this is a remote workspace
+        // that's already connected. The caller still passes the legacy bash
+        // bootstrap as a fallback in case the relay can't be allocated.
+        let pendingRemotePTYRelay = (legacyRemoteCommand == nil)
+            ? prepareRemoteTerminalPTYRelay()
+            : nil
+        let pendingRemotePTYRelayCommand = pendingRemotePTYRelay?.surfaceCommand
+        let startupCommand = pendingRemotePTYRelayCommand ?? legacyRemoteCommand
+        let trackAsRemoteTerminal = pendingRemotePTYRelay != nil || legacyRemoteCommand != nil
         if startupCommand != nil {
             var template = inheritedConfig ?? CmuxSurfaceConfigTemplate()
             template.waitAfterCommand = true
@@ -8252,8 +8415,15 @@ final class Workspace: Identifiable, ObservableObject {
         configureTerminalPanel(newPanel)
         panels[newPanel.id] = newPanel
         panelTitles[newPanel.id] = newPanel.displayTitle
-        if startupCommand != nil {
+        if trackAsRemoteTerminal {
             trackRemoteTerminalSurface(newPanel.id)
+        }
+        if let pendingRemotePTYRelay {
+            attachRemoteTerminalRelay(
+                pendingRemotePTYRelay,
+                panelId: newPanel.id,
+                label: title
+            )
         }
         seedTerminalInheritanceFontPoints(panelId: newPanel.id, configTemplate: inheritedConfig)
 
@@ -8272,9 +8442,10 @@ final class Workspace: Identifiable, ObservableObject {
             panels.removeValue(forKey: newPanel.id)
             panelTitles.removeValue(forKey: newPanel.id)
             surfaceIdToPanelId.removeValue(forKey: newTab.id)
-            if startupCommand != nil {
+            if trackAsRemoteTerminal {
                 untrackRemoteTerminalSurface(newPanel.id)
             }
+            releaseRemoteTerminalPTYRelay(forPanelId: newPanel.id, reason: "splitPane.failed")
             terminalInheritanceFontPointsByPanelId.removeValue(forKey: newPanel.id)
             return nil
         }
