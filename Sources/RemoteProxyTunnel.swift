@@ -249,8 +249,21 @@ private final class ProxySession: @unchecked Sendable {
                 : Data()
             handshakeBuffer = Data()
 
+            // De-alias the WebKit-routing hostname back to the remote-side
+            // loopback name BEFORE handing to BrowserProxyService. The remote
+            // host (e.g. NixOS atlas-dev) may not resolve `*.localtest.me` —
+            // and even when it does, sending the alias would make the daemon
+            // dial a stranger DNS lookup instead of the loopback the user
+            // actually wanted. The alias only existed to force WebKit through
+            // the proxy in the first place (WebKit bypasses the proxy for
+            // raw `localhost`).
+            let upstreamHost = RemoteLoopbackProxyAlias.localhostFamilyHost(
+                forAliasHost: req.host,
+                aliasHost: RemoteLoopbackProxyAlias.aliasHost
+            ) ?? req.host
+
             openChannel(
-                host: req.host,
+                host: upstreamHost,
                 port: req.port,
                 upstreamKind: .socks5Target,
                 successReply: Data([0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]),
@@ -334,8 +347,15 @@ private final class ProxySession: @unchecked Sendable {
             return false
         }
 
+        // See SOCKS5 path: de-alias before handing to BrowserProxyService
+        // so the remote daemon dials a name it can resolve.
+        let upstreamHost = RemoteLoopbackProxyAlias.localhostFamilyHost(
+            forAliasHost: host,
+            aliasHost: RemoteLoopbackProxyAlias.aliasHost
+        ) ?? host
+
         openChannel(
-            host: host,
+            host: upstreamHost,
             port: port,
             upstreamKind: .httpConnectTarget,
             successReply: Self.httpResponse(status: "200 Connection Established", close: false),

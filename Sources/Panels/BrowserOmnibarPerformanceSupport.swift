@@ -128,7 +128,16 @@ final class BrowserOpenTabSuggestionIndex {
         for panelId in suggestionOrder {
             guard matches.count < limit else { break }
             guard let snapshot = suggestionsByPanelId[panelId] else { continue }
-            let isCurrentPanel = snapshot.workspaceId == currentWorkspaceId && snapshot.panelId == currentPanelId
+            // Only surface open-tab suggestions for tabs in the current
+            // workspace. Cross-workspace switch-to-tab on URL Enter was
+            // surprising — typing `localhost:8080` in a remote workspace's
+            // browser was matching an open `localhost:…` tab in another
+            // workspace and pulling focus there on Enter via
+            // `commitSuggestion → focusTab`. The current workspace's own
+            // open browser still surfaces (via `currentPanelSnapshot` and
+            // the per-workspace iteration here).
+            guard snapshot.workspaceId == currentWorkspaceId else { continue }
+            let isCurrentPanel = snapshot.panelId == currentPanelId
             if isCurrentPanel && !includeCurrentPanelForSingleCharacterQuery {
                 continue
             }
