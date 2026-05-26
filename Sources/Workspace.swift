@@ -4697,6 +4697,9 @@ final class Workspace: Identifiable, ObservableObject {
         _ state: Ghostty.ConnectionState,
         configuration: WorkspaceRemoteConfiguration
     ) {
+#if DEBUG
+        cmuxDebugLog("remote.ssh.state workspace=\(id.uuidString.prefix(5)) state=\(state)")
+#endif
         switch state {
         case .connected:
             remoteConnectionState = .connected
@@ -5117,16 +5120,27 @@ final class Workspace: Identifiable, ObservableObject {
     /// local port as a `BrowserProxyEndpoint`. Called from `handleSSHConnectionState`
     /// on `.connected`. Idempotent: stops any existing tunnel before starting a new one.
     func startRemoteProxyTunnel() {
-        guard let integration = sshIntegration else { return }
+        guard let integration = sshIntegration else {
+#if DEBUG
+            cmuxDebugLog("remote.proxy.start.skip workspace=\(id.uuidString.prefix(5)) reason=no_integration")
+#endif
+            return
+        }
         remoteProxyTunnel?.stop()
         let tunnel = RemoteProxyTunnel(connection: integration.connection)
         do {
             let port = try tunnel.start()
             remoteProxyTunnel = tunnel
             applyRemoteProxyEndpointUpdate(BrowserProxyEndpoint(host: "127.0.0.1", port: Int(port)))
+#if DEBUG
+            cmuxDebugLog("remote.proxy.start.ok workspace=\(id.uuidString.prefix(5)) port=\(port)")
+#endif
         } catch {
             remoteProxyTunnel = nil
             applyRemoteProxyEndpointUpdate(nil)
+#if DEBUG
+            cmuxDebugLog("remote.proxy.start.fail workspace=\(id.uuidString.prefix(5)) error=\(error)")
+#endif
         }
     }
 
