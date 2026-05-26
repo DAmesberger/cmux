@@ -32,6 +32,25 @@ struct CmuxSSHURLRequest: Equatable {
     let title: String?
     let sshOptions: [String]
     let noFocus: Bool
+    let color: String?
+
+    init(
+        originalURL: URL,
+        destination: String,
+        port: Int?,
+        title: String?,
+        sshOptions: [String],
+        noFocus: Bool,
+        color: String? = nil
+    ) {
+        self.originalURL = originalURL
+        self.destination = destination
+        self.port = port
+        self.title = title
+        self.sshOptions = sshOptions
+        self.noFocus = noFocus
+        self.color = color
+    }
 
     var cliArguments: [String] {
         var parts = ["ssh"]
@@ -40,6 +59,9 @@ struct CmuxSSHURLRequest: Equatable {
         }
         if let title = normalizedTitle {
             parts += ["--name", title]
+        }
+        if let color, !color.isEmpty {
+            parts += ["--color", color]
         }
         for sshOption in sshOptions {
             parts += ["--ssh-option", sshOption]

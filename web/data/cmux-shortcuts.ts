@@ -76,6 +76,7 @@ export const shortcutCategories: ShortcutCategory[] = [
       { id: "toggleFileExplorer", combos: [["⌘", "⌥", "B"]], description: { en: "Toggle right sidebar", ja: "右サイドバーを切り替え" } },
       { id: "newTab", combos: [["⌘", "N"]], description: { en: "New workspace", ja: "新規ワークスペース" } },
       { id: "openFolder", combos: [["⌘", "O"]], description: { en: "Open folder", ja: "フォルダを開く" } },
+      { id: "sshConnect", combos: [["⌘", "⇧", "S"]], description: { en: "New SSH connection", ja: "新規 SSH 接続" } },
       {
         id: "goToWorkspace",
         combos: [["⌘", "P"]],

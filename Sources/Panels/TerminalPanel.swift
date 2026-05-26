@@ -98,7 +98,12 @@ final class TerminalPanel: Panel, ObservableObject {
         initialInput: String? = nil,
         initialEnvironmentOverrides: [String: String] = [:],
         additionalEnvironment: [String: String] = [:],
-        focusPlacement: TerminalSurfaceFocusPlacement = .workspace
+        focusPlacement: TerminalSurfaceFocusPlacement = .workspace,
+        sshTarget: String? = nil,
+        sshSessionID: String? = nil,
+        sshSurfaceID: String? = nil,
+        sshLabel: String? = nil,
+        sshGroupID: String? = nil
     ) {
         let surface = TerminalSurface(
             tabId: workspaceId,
@@ -111,7 +116,12 @@ final class TerminalPanel: Panel, ObservableObject {
             initialInput: initialInput,
             initialEnvironmentOverrides: initialEnvironmentOverrides,
             additionalEnvironment: additionalEnvironment,
-            focusPlacement: focusPlacement
+            focusPlacement: focusPlacement,
+            sshTarget: sshTarget,
+            sshSessionID: sshSessionID,
+            sshSurfaceID: sshSurfaceID,
+            sshLabel: sshLabel,
+            sshGroupID: sshGroupID
         )
         self.init(workspaceId: workspaceId, surface: surface)
     }

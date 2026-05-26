@@ -475,15 +475,10 @@ extension Workspace {
                 allowFallbackScrollback: shouldPersistScrollback || allowDebugFallbackScrollback
             )
             // Capture the daemon-side surface UUID for remote panels so a
-            // later restore can call `attachTerminal(groupID:surfaceID:)` and
-            // replay the existing PTY rather than spawning a fresh shell.
-            // Prefer the daemon-confirmed identity (set on `Event.opened`);
-            // fall back to the locally-assigned surface UUID if the service
-            // ack hasn't decoded yet — they agree by design.
-            let remoteSurfaceID: UUID? = {
-                guard let relay = remoteTerminalPTYRelays[panelId] else { return nil }
-                return relay.daemonIdentity?.surfaceID ?? relay.surfaceID
-            }()
+            // later restore passes it back as `ssh_surface_id` and the
+            // `Remote` termio backend reattaches the existing PTY rather
+            // than spawning a fresh shell.
+            let remoteSurfaceID: UUID? = remoteSurfaceIdByPanelId[panelId]
             terminalSnapshot = SessionTerminalPanelSnapshot(
                 workingDirectory: directory,
                 scrollback: resolvedScrollback,
@@ -2382,12 +2377,46 @@ final class Workspace: Identifiable, ObservableObject {
     @Published private(set) var activeRemoteTerminalSessionCount: Int = 0
     var surfaceTTYNames: [UUID: String] = [:]
     var sshIntegration: WorkspaceSSHIntegration?
-    /// Remote-terminal PTY relays keyed by the terminal panel id. M4
-    /// (libghostty SSH path) routes new remote terminal surfaces through a
-    /// cmux-owned PTY pair so libghostty can render bytes that originate in
-    /// the daemon's SSH terminal session. See `RemoteTerminalPTYRelay` for
-    /// the design write-up.
-    private var remoteTerminalPTYRelays: [UUID: RemoteTerminalPTYRelay] = [:]
+    /// Locally-generated daemon-side surface UUID per remote terminal panel.
+    /// Passed to libghostty as `ssh_surface_id` so the `Remote` termio
+    /// backend can reattach the same daemon-side PTY on cmux restart.
+    /// Persisted in the panel snapshot as `remoteSurfaceID`.
+    private var remoteSurfaceIdByPanelId: [UUID: UUID] = [:]
+    /// Daemon-authoritative group UUID, learned from the first terminal's
+    /// `opened` reply through the libghostty `on_remote_opened` callback.
+    /// Once populated, subsequent terminals in this workspace pass
+    /// `sshGroupID = liveDaemonGroupID` (and *not* `sshSessionID`), so
+    /// `termio.Remote` emits `surface_new` (new PTY in the same group)
+    /// instead of `session_attach` (which reattaches the same daemon-side
+    /// PTY and yields the "all terminals share one shell" bug). Reset on
+    /// `configureRemoteConnection` and `disconnectRemoteConnection`.
+    private var liveDaemonGroupID: UUID?
+    /// Serializes remote-terminal surface creation around `liveDaemonGroupID`.
+    /// The very first remote terminal of a workspace MUST go through the
+    /// daemon's `session_attach` path (pass `sshSessionID`) so the daemon
+    /// either reattaches the persisted group or creates one. When two or
+    /// more terminals are requested before that first `on_remote_opened`
+    /// fires — which is exactly what happens on workspace restore at app
+    /// launch, where every persisted panel snapshot rehydrates synchronously
+    /// — the second-and-onward calls would also see `liveDaemonGroupID == nil`
+    /// and pass `sshSessionID`, making the daemon's
+    /// `session_attach`-by-`surface_id` handler fall back to
+    /// `group.firstAliveSurface()` and route every restored panel to the same
+    /// shell. The race fix here: while the first creation is in flight,
+    /// subsequent creations are queued; when the daemon's reply populates
+    /// `liveDaemonGroupID` in `acceptDaemonRemoteOpened`, the queue is drained
+    /// and each deferred closure now sees `liveDaemonGroupID != nil` and goes
+    /// through the `surface_new` path (new PTY in the same group).
+    private struct PendingRemoteSurfaceCreation {
+        let create: () -> Void
+    }
+    private var pendingRemoteSurfaceQueue: [PendingRemoteSurfaceCreation] = []
+    private var remoteSurfaceCreationInFlight: Bool = false
+    /// True when Workspace.init was asked (via `skipInitialSurface`)
+    /// to defer the first terminal until SSH is configured. Reset to
+    /// false the moment we spawn the deferred surface. See
+    /// `handleSSHConnectionState`.
+    private var pendingInitialRemoteSurface: Bool = false
     private var sshStateObserverTask: Task<Void, Never>?
     private var remoteProxyTunnel: RemoteProxyTunnel?
     private var remoteDetectedSurfaceIds: Set<UUID> = []
@@ -2836,7 +2865,8 @@ final class Workspace: Identifiable, ObservableObject {
         configTemplate: CmuxSurfaceConfigTemplate? = nil,
         initialTerminalCommand: String? = nil,
         initialTerminalInput: String? = nil,
-        initialTerminalEnvironment: [String: String] = [:], initialDetachedSurface: DetachedSurfaceTransfer? = nil
+        initialTerminalEnvironment: [String: String] = [:], initialDetachedSurface: DetachedSurfaceTransfer? = nil,
+        skipInitialSurface: Bool = false
     ) {
         self.id = UUID()
         self.portOrdinal = portOrdinal
@@ -2896,7 +2926,19 @@ final class Workspace: Identifiable, ObservableObject {
         }
 
         var initialTabId: TabID?
-        if let initialDetachedSurface {
+        if skipInitialSurface {
+            // M6: SSH-bound workspaces tell us not to create an initial
+            // terminal so the first surface can be created later, after
+            // `configureRemoteConnection` has set `remoteConfiguration`
+            // and `sshIntegration`. Without this skip the first terminal
+            // spawns as a local default shell because `newTerminalSurface`'s
+            // PTY-relay gate sees `isRemoteWorkspace == false` at the
+            // moment workspace.create runs (remoteConfiguration is set
+            // by a SEPARATE v2 call that happens after workspace.create
+            // returns). `pendingInitialRemoteSurface` is consumed by
+            // `handleSSHConnectionState` when state reaches `.connected`.
+            pendingInitialRemoteSurface = true
+        } else if let initialDetachedSurface {
             if let initialPaneId = bonsplitController.allPaneIds.first,
                attachDetachedSurface(initialDetachedSurface, inPane: initialPaneId, focus: false) != nil {
                 initialTabId = surfaceIdFromPanelId(initialDetachedSurface.panelId)
@@ -4553,6 +4595,8 @@ final class Workspace: Identifiable, ObservableObject {
 
     func configureRemoteConnection(_ configuration: WorkspaceRemoteConfiguration, autoConnect: Bool = true) {
         remoteConfiguration = configuration
+        liveDaemonGroupID = nil
+        resetRemoteSurfaceCreationGate()
         clearRemoteDetectedSurfacePorts()
         remoteDetectedPorts = []
         remoteForwardedPorts = []
@@ -4574,12 +4618,17 @@ final class Workspace: Identifiable, ObservableObject {
         applyRemoteProxyEndpointUpdate(nil)
         applyBrowserRemoteWorkspaceStatusToPanels()
 
-        guard autoConnect else {
-            remoteConnectionState = .disconnected
-            applyBrowserRemoteWorkspaceStatusToPanels()
-            return
-        }
-
+        // M6: ALWAYS create the libghostty SSH integration for a
+        // remote workspace, regardless of the legacy `autoConnect`
+        // flag. `autoConnect=false` used to mean "the CLI already
+        // launched /usr/bin/ssh for the initial terminal, don't
+        // start a parallel libghostty connection" — but every new
+        // terminal opened after the first one needs the libghostty
+        // path to route through the daemon, AND session restore at
+        // app launch needs the integration up to reattach surfaces.
+        // Without the integration, the PTY-relay gate falls back to
+        // local shells, which is the M6 user-reported behaviour
+        // ("2nd terminal is local").
         remoteConnectionState = .connecting
         applyBrowserRemoteWorkspaceStatusToPanels()
 
@@ -4602,6 +4651,8 @@ final class Workspace: Identifiable, ObservableObject {
             remoteConnectionState = .error
             applyBrowserRemoteWorkspaceStatusToPanels()
         }
+
+        _ = autoConnect // kept on the signature for callers that still pass it
     }
 
     func reconnectRemoteConnection() {
@@ -4611,12 +4662,13 @@ final class Workspace: Identifiable, ObservableObject {
 
     func disconnectRemoteConnection(clearConfiguration: Bool = false) {
         stopRemoteProxyTunnel()
-        releaseAllRemoteTerminalPTYRelays(reason: "disconnect")
         let previousIntegration = sshIntegration
         sshIntegration = nil
         sshStateObserverTask?.cancel()
         sshStateObserverTask = nil
         previousIntegration?.tearDown()
+        liveDaemonGroupID = nil
+        resetRemoteSurfaceCreationGate()
         activeRemoteTerminalSurfaceIds.removeAll()
         activeRemoteTerminalSessionCount = 0
         pendingRemoteSurfaceTTYName = nil
@@ -4651,6 +4703,17 @@ final class Workspace: Identifiable, ObservableObject {
             remoteConnectionDetail = nil
             statusEntries.removeValue(forKey: Self.remoteErrorStatusKey)
             startRemoteProxyTunnel()
+            // M6: spawn the deferred initial terminal now that the SSH
+            // integration is up. `newTerminalSurface`'s PTY-relay gate
+            // will pass (isRemoteWorkspace + sshIntegration != nil) so
+            // the very first terminal in this workspace is wired
+            // through libghostty, not a local shell.
+            if pendingInitialRemoteSurface {
+                pendingInitialRemoteSurface = false
+                if let initialPaneId = bonsplitController.allPaneIds.first {
+                    _ = newTerminalSurface(inPane: initialPaneId, focus: true)
+                }
+            }
         case .connecting:
             remoteConnectionState = .connecting
         case .reconnecting:
@@ -4691,205 +4754,202 @@ final class Workspace: Identifiable, ObservableObject {
         applyPendingRemoteSurfaceTTYIfNeeded(to: panelId)
     }
 
-    // MARK: - Remote terminal PTY relay (M4)
+    // MARK: - Remote terminal surface SSH context
 
-    /// Returns true when new remote terminal surfaces should be wired through
-    /// the libghostty SSH path (PTY relay + SessionBridge) rather than the
-    /// legacy bash bootstrap. Falls back to legacy when the env-var escape
-    /// hatch `CMUX_SSH_USE_LEGACY_BASH=1` is set or when the SSH integration
-    /// hasn't reached `.connected` yet.
-    private func shouldUseRemotePTYRelayForNewTerminals() -> Bool {
-        guard isRemoteWorkspace else { return false }
+    /// Build the ssh-context tuple for a new remote terminal surface so the
+    /// libghostty `Remote` termio backend can attach to the workspace's SSH
+    /// connection. Returns nil when this workspace is not remote (a fresh
+    /// local terminal is created instead) or when the legacy env-var escape
+    /// hatch `CMUX_SSH_USE_LEGACY_BASH=1` is set.
+    ///
+    /// Pass `restoreRemoteSurfaceID` to reattach the daemon's existing PTY
+    /// for that surface (used on session restore); pass nil for a brand-new
+    /// surface, in which case a fresh UUID is generated and recorded under
+    /// `remoteSurfaceIdByPanelId` once the panel is created.
+    private struct RemoteSurfaceSSHContext {
+        let sshTarget: String
+        /// Set on the FIRST terminal of a workspace (or whenever
+        /// `liveDaemonGroupID` has not yet been learned). Drives the
+        /// daemon's "session_attach by label / create-on-miss" path so
+        /// the first surface establishes the group.
+        let sshSessionID: String?
+        /// Set on the SECOND and subsequent terminals of a workspace once
+        /// the daemon has acknowledged the first one and reported back
+        /// its authoritative `group_id`. Pass the live group_id (as a
+        /// 32-char lowercase hex string, no dashes — the format ghostty
+        /// expects) and OMIT `sshSessionID`, so `termio.Remote` emits
+        /// `surface_new` (new PTY in the same group) instead of
+        /// `session_attach` (which would reattach the existing PTY and
+        /// produce the "every terminal shares one shell" bug).
+        let sshGroupID: String?
+        /// Set ONLY when a snapshot is being restored (cmux remembers
+        /// the daemon-assigned surface UUID from a previous run and
+        /// wants the daemon to replay that PTY's state). For fresh
+        /// terminals, MUST be nil so `termio.Remote.zig:67` does NOT
+        /// set `restoring = true`, which would force `surface_attach`
+        /// against a surface the daemon doesn't have, producing an
+        /// immediate `.eof`.
+        let sshSurfaceID: UUID?
+        let sshLabel: String
+    }
+
+    private func prepareRemoteSurfaceSSHContext(
+        restoreRemoteSurfaceID: UUID? = nil
+    ) -> RemoteSurfaceSSHContext? {
+        guard isRemoteWorkspace, let configuration = remoteConfiguration else {
+            return nil
+        }
         if ProcessInfo.processInfo.environment["CMUX_SSH_USE_LEGACY_BASH"] == "1" {
+            return nil
+        }
+        // sshSurfaceID is set ONLY when we're truly trying to reattach a
+        // snapshot-persisted surface. For fresh terminals we MUST pass
+        // nil so `termio.Remote` does NOT flag `restoring = true` (see
+        // `ghostty/src/termio/Remote.zig:67`). With `restoring = true`
+        // and `group_id != zero`, Remote.zig emits `.surface_attach`
+        // instead of `.surface_new`, and the daemon — finding no
+        // matching surface in its group — sends `.eof` and closes the
+        // channel immediately. That manifested as the M6 bug
+        // "2nd terminal pops up and disappears."
+        // Branch on whether the daemon has reported back its
+        // authoritative group_id (via the libghostty
+        // `on_remote_opened` callback). See `liveDaemonGroupID` doc and
+        // the comments on `RemoteSurfaceSSHContext.sshGroupID` for the
+        // open_type rationale.
+        if let daemonGroupID = liveDaemonGroupID {
+            return RemoteSurfaceSSHContext(
+                sshTarget: configuration.displayTarget,
+                sshSessionID: nil,
+                sshGroupID: hexUUID(daemonGroupID),
+                sshSurfaceID: restoreRemoteSurfaceID,
+                sshLabel: title
+            )
+        }
+        return RemoteSurfaceSSHContext(
+            sshTarget: configuration.displayTarget,
+            sshSessionID: hexUUID(configuration.groupID),
+            sshGroupID: nil,
+            sshSurfaceID: restoreRemoteSurfaceID,
+            sshLabel: title
+        )
+    }
+
+    /// Called from the libghostty `on_remote_opened` C callback (via
+    /// `TerminalSurface`) once the daemon acknowledges the first
+    /// terminal of this workspace and hands back the authoritative
+    /// group_id. Idempotent — only the first non-zero report wins;
+    /// every subsequent surface's `opened` reply echoes the same
+    /// group_id back so further updates are no-ops.
+    func acceptDaemonRemoteOpened(groupID: UUID, surfaceID: UUID) {
+        let isFirst = (liveDaemonGroupID == nil)
+        if isFirst {
+            liveDaemonGroupID = groupID
+        }
+        // surfaceID is captured per-panel via `remoteSurfaceIdByPanelId`
+        // for M5 session restore; the callback only refines the workspace-
+        // level group identity.
+        _ = surfaceID
+
+        // Drain the pending-creation queue on the FIRST opened reply.
+        // Subsequent replies are no-ops (the queue is already empty and
+        // `remoteSurfaceCreationInFlight` is already false). We're already
+        // on MainActor (the libghostty C callback hops onto main via
+        // DispatchQueue.main.async in `GhosttyTerminalView`), so call
+        // synchronously — each drained closure will now see
+        // `liveDaemonGroupID != nil` and take the `surface_new` path via
+        // `prepareRemoteSurfaceSSHContext`.
+        if isFirst {
+            remoteSurfaceCreationInFlight = false
+            let pending = pendingRemoteSurfaceQueue
+            pendingRemoteSurfaceQueue.removeAll(keepingCapacity: false)
+            for entry in pending {
+                entry.create()
+            }
+        }
+    }
+
+    /// Gate a remote-terminal surface creation closure on the workspace's
+    /// `liveDaemonGroupID` lifecycle. See the doc on
+    /// `pendingRemoteSurfaceQueue` for the race this fixes.
+    ///
+    /// Returns true when `create` ran synchronously and the caller may
+    /// continue with any post-creation work. Returns false when the
+    /// creation was queued; the caller must NOT do further work that
+    /// depends on the panel existing (the queued closure is responsible
+    /// for the full creation + bookkeeping when it runs later).
+    ///
+    /// For non-remote workspaces, `create` always runs immediately.
+    @discardableResult
+    fileprivate func gateRemoteTerminalSurfaceCreation(_ create: @escaping () -> Void) -> Bool {
+        // Local workspace: nothing to serialize.
+        guard isRemoteWorkspace, remoteConfiguration != nil else {
+            create()
+            return true
+        }
+        // Daemon group already learned — every creation goes through the
+        // `surface_new` path and can run immediately. This is the common
+        // case for manual ⌘D after the first terminal is up.
+        if liveDaemonGroupID != nil {
+            create()
+            return true
+        }
+        // First creation in flight; defer this one until the daemon
+        // acknowledges via `on_remote_opened`.
+        if remoteSurfaceCreationInFlight {
+            pendingRemoteSurfaceQueue.append(.init(create: create))
             return false
         }
-        guard let integration = sshIntegration else { return false }
-        if case .connected = integration.connectionState { return true }
-        return false
+        // First-in-queue: kick off the `session_attach` path and arm the
+        // gate so subsequent calls in the same MainActor turn get queued.
+        remoteSurfaceCreationInFlight = true
+        create()
+        return true
     }
 
-    /// Allocate a `RemoteTerminalPTYRelay` for an upcoming remote terminal
-    /// surface. The caller passes `relay.surfaceCommand` to `TerminalPanel`
-    /// so Ghostty spawns a tiny shell that pumps our PTY slave; once the
-    /// panel is created, the caller invokes `attachRemoteTerminalRelay` to
-    /// wire the SSH channel.
-    ///
-    /// Pass `restoreRemoteSurfaceID` when restoring a session snapshot —
-    /// the persisted daemon-side surface UUID. The daemon will recognize
-    /// the surface_id on `attachTerminal(...)` and replay the existing
-    /// PTY's state (scrollback + cursor) rather than spawning a fresh
-    /// shell. Pass `nil` for a new session; the relay generates a fresh
-    /// surface UUID that the daemon promotes into its session table.
-    private func prepareRemoteTerminalPTYRelay(
-        restoreRemoteSurfaceID: UUID? = nil
-    ) -> RemoteTerminalPTYRelay? {
-        guard shouldUseRemotePTYRelayForNewTerminals() else { return nil }
-        let surfaceID = restoreRemoteSurfaceID ?? UUID()
-        guard let relay = RemoteTerminalPTYRelay.make(surfaceID: surfaceID) else {
-            #if DEBUG
-            cmuxDebugLog(
-                "remote.pty.allocFailed workspace=\(id.uuidString.prefix(5)) " +
-                "errno=\(errno)"
-            )
-            #endif
-            return nil
-        }
-        return relay
+    /// Reset queue state on connection (re)configuration and disconnect.
+    /// Queued creations from a stale connection are dropped (they would
+    /// otherwise execute against the wrong daemon group).
+    private func resetRemoteSurfaceCreationGate() {
+        pendingRemoteSurfaceQueue.removeAll(keepingCapacity: false)
+        remoteSurfaceCreationInFlight = false
     }
 
-    /// Attach `relay` to the SSH integration for the terminal `panelId`.
-    /// On success, stores the relay in `remoteTerminalPTYRelays` keyed by
-    /// `panelId`. On failure, tears the relay down and leaves the panel
-    /// running its placeholder shell command (which will exit quickly,
-    /// showing the user the channel-open error).
-    private func attachRemoteTerminalRelay(
-        _ relay: RemoteTerminalPTYRelay,
-        panelId: UUID,
-        label: String
-    ) {
-        guard let integration = sshIntegration,
-              let configuration = remoteConfiguration else {
-            relay.tearDown(reason: "no.integration")
-            return
-        }
-        // Best-effort initial viewport. We prefer the live Ghostty surface
-        // dimensions when the surface is already created (split path), and
-        // fall back to 80x24 otherwise (new-tab path, where the surface is
-        // still being constructed). `observeRemoteTerminalFirstResize` then
-        // delivers the true viewport once the hosted view lays out.
-        let initialSize = currentTerminalSurfaceSize(forPanelId: panelId)
-            ?? Ghostty.TerminalSize(rows: 24, cols: 80, widthPx: 0, heightPx: 0)
-        do {
-            let bridge = try integration.attachTerminal(
-                groupID: configuration.groupID,
-                surfaceID: relay.surfaceID,
-                size: initialSize,
-                label: label
-            )
-            // Capture the daemon-authoritative identity when the channel
-            // opens so we can persist it on the next snapshot pass. The
-            // groupID it reports is the workspace-level group (matches
-            // `configuration.groupID`); the surfaceID is the daemon's
-            // record of this attachment, which is what we need to thread
-            // back through on reattach.
-            bridge.onOpenedDetails = { [weak self, weak relay] identity in
-                guard let self, let relay else { return }
-                relay.setDaemonIdentity(identity)
-                #if DEBUG
-                cmuxDebugLog(
-                    "remote.pty.identity workspace=\(self.id.uuidString.prefix(5)) " +
-                    "panel=\(panelId.uuidString.prefix(5)) " +
-                    "group=\(identity.groupID.uuidString.prefix(5)) " +
-                    "surface=\(identity.surfaceID.uuidString.prefix(5)) " +
-                    "historyRows=\(identity.historyRows)"
-                )
-                #endif
-            }
-            relay.start(bridge: bridge)
-            remoteTerminalPTYRelays[panelId] = relay
-            observeRemoteTerminalFirstResize(panelId: panelId)
-            #if DEBUG
-            cmuxDebugLog(
-                "remote.pty.attached workspace=\(id.uuidString.prefix(5)) " +
-                "panel=\(panelId.uuidString.prefix(5)) " +
-                "surface=\(relay.surfaceID.uuidString.prefix(5)) " +
-                "initialSize=\(initialSize.cols)x\(initialSize.rows)"
-            )
-            #endif
-        } catch {
-            #if DEBUG
-            cmuxDebugLog(
-                "remote.pty.attachFailed workspace=\(id.uuidString.prefix(5)) " +
-                "panel=\(panelId.uuidString.prefix(5)) err=\(error)"
-            )
-            #endif
-            relay.tearDown(reason: "attach.failed")
-        }
-    }
-
-    /// Read the live Ghostty surface dimensions for `panelId`, if available.
-    /// Returns nil when the runtime surface has not yet been created (typical
-    /// for brand-new tabs that finish their first layout pass asynchronously).
-    private func currentTerminalSurfaceSize(forPanelId panelId: UUID) -> Ghostty.TerminalSize? {
-        guard let terminalPanel = panels[panelId] as? TerminalPanel,
-              let surface = terminalPanel.surface.surface else {
-            return nil
-        }
-        let size = ghostty_surface_size(surface)
-        guard size.rows > 0, size.columns > 0 else { return nil }
-        return Ghostty.TerminalSize(
-            rows: UInt16(clamping: Int(size.rows)),
-            cols: UInt16(clamping: Int(size.columns)),
-            widthPx: size.width_px,
-            heightPx: size.height_px
-        )
-    }
-
-    /// Subscribe to the next `terminalSurfaceDidBecomeReady` notification for
-    /// `panelId` and forward the real viewport to the remote PTY relay.
-    /// One-shot: the observer removes itself after firing. New-tab and split
-    /// paths post the notification once `ghostty_surface_set_size` has been
-    /// called inside `TerminalSurface.makeRuntimeSurface`, so this guarantees
-    /// the daemon side learns the truth on first layout.
-    private func observeRemoteTerminalFirstResize(panelId: UUID) {
-        // Capture the observer token in a class box so the @Sendable
-        // notification closure can read it without tripping the
-        // non-Sendable-capture warning on `NSObjectProtocol?`.
-        final class TokenBox: @unchecked Sendable {
-            var token: NSObjectProtocol?
-        }
-        let box = TokenBox()
-        box.token = NotificationCenter.default.addObserver(
-            forName: .terminalSurfaceDidBecomeReady,
-            object: nil,
-            queue: .main
-        ) { [weak self] note in
-            let notifiedSurfaceId = note.userInfo?["surfaceId"] as? UUID
-            guard notifiedSurfaceId == panelId else { return }
-            if let token = box.token {
-                NotificationCenter.default.removeObserver(token)
-                box.token = nil
-            }
-            Task { @MainActor [weak self] in
-                self?.deliverFirstRemoteTerminalResize(panelId: panelId)
+    /// Install a remote-opened forwarder on the panel's `TerminalSurface`
+    /// so the daemon's authoritative `group_id` (and per-surface
+    /// `surface_id`) flow back to `acceptDaemonRemoteOpened`. Called
+    /// from every site that creates a new `TerminalPanel` in a remote
+    /// workspace. No-op when the workspace is local — the libghostty
+    /// callback only fires for SSH-backed surfaces, but we install the
+    /// forwarder unconditionally to keep the call sites uniform.
+    fileprivate func bindRemoteOpenedCallback(for panel: TerminalPanel) {
+        let workspace = self
+        let panelId = panel.id
+        panel.surface.remoteOpenedHandler = { [weak workspace] groupID, surfaceID in
+            guard let workspace else { return }
+            workspace.acceptDaemonRemoteOpened(groupID: groupID, surfaceID: surfaceID)
+            // Backfill the per-panel daemon surface UUID if the panel
+            // was created without a pre-allocated surface id (e.g. the
+            // first terminal after the daemon went through
+            // create-on-miss). Idempotent; the entry usually already
+            // matches the daemon-reported value.
+            if workspace.remoteSurfaceIdByPanelId[panelId] == nil {
+                workspace.remoteSurfaceIdByPanelId[panelId] = surfaceID
             }
         }
     }
 
-    private func deliverFirstRemoteTerminalResize(panelId: UUID) {
-        guard let relay = remoteTerminalPTYRelays[panelId] else { return }
-        guard let size = currentTerminalSurfaceSize(forPanelId: panelId) else { return }
-        relay.resize(
-            rows: size.rows,
-            cols: size.cols,
-            widthPx: size.widthPx,
-            heightPx: size.heightPx
-        )
-        #if DEBUG
-        cmuxDebugLog(
-            "remote.pty.firstResize workspace=\(id.uuidString.prefix(5)) " +
-            "panel=\(panelId.uuidString.prefix(5)) " +
-            "size=\(size.cols)x\(size.rows)"
-        )
-        #endif
-    }
-
-    /// Tear down the PTY relay for `panelId` if one exists. Called from
-    /// `discardClosedPanelLifecycleState` and the workspace-level remote
-    /// disconnect path.
-    func releaseRemoteTerminalPTYRelay(forPanelId panelId: UUID, reason: String) {
-        guard let relay = remoteTerminalPTYRelays.removeValue(forKey: panelId) else { return }
-        relay.tearDown(reason: reason)
-    }
-
-    /// Tear down every active relay (e.g. when the SSH connection is
-    /// explicitly torn down).
-    func releaseAllRemoteTerminalPTYRelays(reason: String) {
-        let relays = remoteTerminalPTYRelays
-        remoteTerminalPTYRelays.removeAll()
-        for (_, relay) in relays {
-            relay.tearDown(reason: reason)
-        }
+    /// Render a `UUID` as a 32-char lowercase hex string (no dashes), the
+    /// wire format libghostty expects for `_ssh-group-id` /
+    /// `_ssh-surface-id`.
+    private func hexUUID(_ uuid: UUID) -> String {
+        let bytes = uuid.uuid
+        let parts: [UInt8] = [
+            bytes.0, bytes.1, bytes.2, bytes.3,
+            bytes.4, bytes.5, bytes.6, bytes.7,
+            bytes.8, bytes.9, bytes.10, bytes.11,
+            bytes.12, bytes.13, bytes.14, bytes.15,
+        ]
+        return parts.map { String(format: "%02x", $0) }.joined()
     }
 
     func untrackRemoteTerminalSurface(_ panelId: UUID) {
@@ -4897,6 +4957,13 @@ final class Workspace: Identifiable, ObservableObject {
         activeRemoteTerminalSessionCount = activeRemoteTerminalSurfaceIds.count
         guard !isDetachingCloseTransaction else { return }
         maybeDemoteRemoteWorkspaceAfterSSHSessionEnded()
+    }
+
+    /// Drop the persisted daemon-side surface UUID for `panelId`. Called
+    /// from the panel-close lifecycle so a re-opened workspace doesn't
+    /// inherit the dead surface id.
+    func forgetRemoteSurfaceId(forPanelId panelId: UUID) {
+        remoteSurfaceIdByPanelId.removeValue(forKey: panelId)
     }
 
     private func maybeDemoteRemoteWorkspaceAfterSSHSessionEnded() {
@@ -5330,7 +5397,6 @@ final class Workspace: Identifiable, ObservableObject {
         initialDividerPosition: CGFloat? = nil
     ) -> TerminalPanel? {
 #if DEBUG
-        let splitTimingStart = ProcessInfo.processInfo.systemUptime
         let splitTransport = remoteConfiguration != nil ? "ssh" : "local"
         dlog(
             "split.timing workspace=\(id.uuidString.prefix(5)) panel=\(panelId.uuidString.prefix(5)) " +
@@ -5349,23 +5415,69 @@ final class Workspace: Identifiable, ObservableObject {
         }
 
         guard let paneId = sourcePaneId else { return nil }
-        var inheritedConfig = inheritedTerminalConfig(preferredPanelId: panelId, inPane: paneId)
+        let inheritedConfig = inheritedTerminalConfig(preferredPanelId: panelId, inPane: paneId)
         let requestedInitialCommand = initialCommand?.trimmingCharacters(in: .whitespacesAndNewlines)
         let explicitInitialCommand = (requestedInitialCommand?.isEmpty == false) ? requestedInitialCommand : nil
         let remoteTerminalStartupCommand = remoteTerminalStartupCommand()
 
-        // M4: prefer the libghostty SSH path when this is a remote workspace
-        // that's already connected. The relay must be opted-in only when the
-        // caller did not supply an explicit command — explicit commands are
-        // user-driven (e.g. a CLI `cmux split foo`) and should run locally.
-        let pendingRemotePTYRelay = (explicitInitialCommand == nil)
-            ? prepareRemoteTerminalPTYRelay()
+        // Serialize remote-workspace splits around `liveDaemonGroupID`.
+        // See the doc on `pendingRemoteSurfaceQueue` for the rationale.
+        let shouldGate = isRemoteWorkspace && explicitInitialCommand == nil
+        var createdPanel: TerminalPanel?
+        let ran = gateRemoteTerminalSurfaceCreation { [self] in
+            createdPanel = newTerminalSplitImpl(
+                panelId: panelId,
+                paneId: paneId,
+                orientation: orientation,
+                insertFirst: insertFirst,
+                focus: focus,
+                workingDirectory: workingDirectory,
+                tmuxStartCommand: tmuxStartCommand,
+                startupEnvironment: startupEnvironment,
+                initialDividerPosition: initialDividerPosition,
+                inheritedConfig: inheritedConfig,
+                explicitInitialCommand: explicitInitialCommand,
+                remoteTerminalStartupCommand: remoteTerminalStartupCommand
+            )
+        }
+        if shouldGate && !ran {
+            return nil
+        }
+        return createdPanel
+    }
+
+    /// Inner body of `newTerminalSplit`. Extracted so the gating helper
+    /// can re-invoke it from the pending-creation queue. See
+    /// `newTerminalSurfaceImpl` for the same pattern on the non-split path.
+    private func newTerminalSplitImpl(
+        panelId: UUID,
+        paneId: PaneID,
+        orientation: SplitOrientation,
+        insertFirst: Bool,
+        focus: Bool,
+        workingDirectory: String?,
+        tmuxStartCommand: String?,
+        startupEnvironment: [String: String],
+        initialDividerPosition: CGFloat?,
+        inheritedConfig: CmuxSurfaceConfigTemplate?,
+        explicitInitialCommand: String?,
+        remoteTerminalStartupCommand: String?
+    ) -> TerminalPanel? {
+        var inheritedConfig = inheritedConfig
+#if DEBUG
+        let splitTimingStart = ProcessInfo.processInfo.systemUptime
+        let splitTransport = remoteConfiguration != nil ? "ssh" : "local"
+#endif
+        // Route remote-workspace splits through libghostty's `Remote`
+        // termio backend by passing ssh-context fields into the surface
+        // config. Explicit user-supplied initial commands stay local
+        // (e.g. a CLI `cmux split foo`).
+        let remoteSSHContext = (explicitInitialCommand == nil)
+            ? prepareRemoteSurfaceSSHContext()
             : nil
-        let pendingRemotePTYRelayCommand = pendingRemotePTYRelay?.surfaceCommand
         let startupCommand = explicitInitialCommand
-            ?? pendingRemotePTYRelayCommand
-            ?? remoteTerminalStartupCommand
-        let trackAsRemoteTerminal = pendingRemotePTYRelay != nil || remoteTerminalStartupCommand != nil
+            ?? (remoteSSHContext == nil ? remoteTerminalStartupCommand : nil)
+        let trackAsRemoteTerminal = remoteSSHContext != nil || remoteTerminalStartupCommand != nil
         // Hold the pane open after the remote session ends so the user can read the
         // "ssh exited …" message the startup script prints. Otherwise Ghostty silently
         // respawns a local login shell when the command exits (the PTY falls through
@@ -5420,20 +5532,24 @@ final class Workspace: Identifiable, ObservableObject {
             portOrdinal: portOrdinal,
             initialCommand: startupCommand,
             tmuxStartCommand: tmuxStartCommand,
-            additionalEnvironment: startupEnvironment
+            additionalEnvironment: startupEnvironment,
+            sshTarget: remoteSSHContext?.sshTarget,
+            sshSessionID: remoteSSHContext?.sshSessionID,
+            sshSurfaceID: remoteSSHContext?.sshSurfaceID.map { hexUUID($0) },
+            sshLabel: remoteSSHContext?.sshLabel,
+            sshGroupID: remoteSSHContext?.sshGroupID
         )
         configureTerminalPanel(newPanel)
+        bindRemoteOpenedCallback(for: newPanel)
         panels[newPanel.id] = newPanel
         panelTitles[newPanel.id] = newPanel.displayTitle
         if trackAsRemoteTerminal {
             trackRemoteTerminalSurface(newPanel.id)
         }
-        if let pendingRemotePTYRelay {
-            attachRemoteTerminalRelay(
-                pendingRemotePTYRelay,
-                panelId: newPanel.id,
-                label: title
-            )
+        if let remoteSSHContext {
+            if let sid = remoteSSHContext.sshSurfaceID {
+                remoteSurfaceIdByPanelId[newPanel.id] = sid
+            }
         }
         seedTerminalInheritanceFontPoints(panelId: newPanel.id, configTemplate: inheritedConfig)
 #if DEBUG
@@ -5470,7 +5586,7 @@ final class Workspace: Identifiable, ObservableObject {
             if trackAsRemoteTerminal {
                 untrackRemoteTerminalSurface(newPanel.id)
             }
-            releaseRemoteTerminalPTYRelay(forPanelId: newPanel.id, reason: "splitPane.failed")
+            remoteSurfaceIdByPanelId.removeValue(forKey: newPanel.id)
             terminalInheritanceFontPointsByPanelId.removeValue(forKey: newPanel.id)
             return nil
         }
@@ -5538,30 +5654,86 @@ final class Workspace: Identifiable, ObservableObject {
         let previousFocusedPanelId = focusedPanelId
         let previousHostedView = focusedTerminalPanel?.hostedView
 
-        var inheritedConfig = inheritedTerminalConfig(inPane: paneId)
+        let inheritedConfig = inheritedTerminalConfig(inPane: paneId)
         let requestedInitialCommand = initialCommand?.trimmingCharacters(in: .whitespacesAndNewlines)
         let explicitInitialCommand = (requestedInitialCommand?.isEmpty == false) ? requestedInitialCommand : nil
         let remoteTerminalStartupCommand = remoteTerminalStartupCommand()
 
-        // M4: when a remote workspace is `.connected` we route new terminal
-        // surfaces through the libghostty SSH path. The relay owns a PTY
-        // pair; the shell command Ghostty spawns redirects to that pair, and
-        // the SessionBridge pumps bytes between the daemon's terminal channel
-        // and the PTY master.
+        // Serialize remote-workspace terminal creation around
+        // `liveDaemonGroupID`. The first remote terminal goes through the
+        // `session_attach` path synchronously; subsequent creations during
+        // the same MainActor turn (typical at session-restore time when
+        // every panel snapshot rehydrates at once) are queued and drained
+        // from `acceptDaemonRemoteOpened` once the daemon's authoritative
+        // `group_id` is known. See `gateRemoteTerminalSurfaceCreation` and
+        // `pendingRemoteSurfaceQueue` for the rationale.
         //
-        // M5: when restoring from a session snapshot, pass the persisted
-        // daemon surface UUID so the relay's surfaceID matches what the
-        // daemon already has on file — `attachTerminal` then replays the
-        // existing PTY's scrollback + cursor rather than spawning a fresh
-        // shell.
-        let pendingRemotePTYRelay = (explicitInitialCommand == nil)
-            ? prepareRemoteTerminalPTYRelay(restoreRemoteSurfaceID: restoreRemoteSurfaceID)
+        // For a local workspace (or when an explicit `initialCommand` is
+        // present and we'd run it locally), this is a no-op gate: the
+        // closure runs immediately and the function returns the panel.
+        let shouldGate = isRemoteWorkspace && explicitInitialCommand == nil
+        var createdPanel: TerminalPanel?
+        let ran = gateRemoteTerminalSurfaceCreation { [self] in
+            createdPanel = newTerminalSurfaceImpl(
+                inPane: paneId,
+                shouldFocusNewTab: shouldFocusNewTab,
+                previousFocusedPanelId: previousFocusedPanelId,
+                previousHostedView: previousHostedView,
+                inheritedConfig: inheritedConfig,
+                explicitInitialCommand: explicitInitialCommand,
+                remoteTerminalStartupCommand: remoteTerminalStartupCommand,
+                workingDirectory: workingDirectory,
+                tmuxStartCommand: tmuxStartCommand,
+                initialInput: initialInput,
+                startupEnvironment: startupEnvironment,
+                restoreRemoteSurfaceID: restoreRemoteSurfaceID
+            )
+        }
+        if shouldGate && !ran {
+            // Creation was queued; the deferred closure will create the
+            // panel once `liveDaemonGroupID` is known. Caller will see nil
+            // for now; any restore bookkeeping keyed by the panel id is
+            // lost for queued panels (acceptable trade-off vs. routing
+            // every panel to the same daemon-side shell).
+            return nil
+        }
+        return createdPanel
+    }
+
+    /// Inner body of `newTerminalSurface`. Extracted so the gating helper
+    /// can re-invoke it from the pending-creation queue. Must capture all
+    /// state from the call site since this may run synchronously OR via
+    /// the deferred-creation drain in `acceptDaemonRemoteOpened`.
+    private func newTerminalSurfaceImpl(
+        inPane paneId: PaneID,
+        shouldFocusNewTab: Bool,
+        previousFocusedPanelId: UUID?,
+        previousHostedView: GhosttySurfaceScrollView?,
+        inheritedConfig: CmuxSurfaceConfigTemplate?,
+        explicitInitialCommand: String?,
+        remoteTerminalStartupCommand: String?,
+        workingDirectory: String?,
+        tmuxStartCommand: String?,
+        initialInput: String?,
+        startupEnvironment: [String: String],
+        restoreRemoteSurfaceID: UUID?
+    ) -> TerminalPanel? {
+        var inheritedConfig = inheritedConfig
+        // Route remote-workspace terminals through libghostty's `Remote`
+        // termio backend by passing ssh-context fields into the surface
+        // config. The ghostty side wires the parser directly to the SSH
+        // mux channel — no local PTY relay involved.
+        //
+        // On session restore (`restoreRemoteSurfaceID != nil`) we pass
+        // the persisted daemon surface UUID so the daemon replays the
+        // existing PTY's scrollback + cursor rather than spawning a
+        // fresh shell.
+        let remoteSSHContext = (explicitInitialCommand == nil)
+            ? prepareRemoteSurfaceSSHContext(restoreRemoteSurfaceID: restoreRemoteSurfaceID)
             : nil
-        let pendingRemotePTYRelayCommand = pendingRemotePTYRelay?.surfaceCommand
         let startupCommand = explicitInitialCommand
-            ?? pendingRemotePTYRelayCommand
-            ?? remoteTerminalStartupCommand
-        let trackAsRemoteTerminal = pendingRemotePTYRelay != nil || remoteTerminalStartupCommand != nil
+            ?? (remoteSSHContext == nil ? remoteTerminalStartupCommand : nil)
+        let trackAsRemoteTerminal = remoteSSHContext != nil || remoteTerminalStartupCommand != nil
         // See the comment at the other call site: hold the PTY open after the remote
         // command exits so the user sees the error rather than a silently-respawned
         // local login shell.
@@ -5581,20 +5753,24 @@ final class Workspace: Identifiable, ObservableObject {
             initialCommand: startupCommand,
             tmuxStartCommand: tmuxStartCommand,
             initialInput: initialInput,
-            additionalEnvironment: startupEnvironment
+            additionalEnvironment: startupEnvironment,
+            sshTarget: remoteSSHContext?.sshTarget,
+            sshSessionID: remoteSSHContext?.sshSessionID,
+            sshSurfaceID: remoteSSHContext?.sshSurfaceID.map { hexUUID($0) },
+            sshLabel: remoteSSHContext?.sshLabel,
+            sshGroupID: remoteSSHContext?.sshGroupID
         )
         configureTerminalPanel(newPanel)
+        bindRemoteOpenedCallback(for: newPanel)
         panels[newPanel.id] = newPanel
         panelTitles[newPanel.id] = newPanel.displayTitle
         if trackAsRemoteTerminal {
             trackRemoteTerminalSurface(newPanel.id)
         }
-        if let pendingRemotePTYRelay {
-            attachRemoteTerminalRelay(
-                pendingRemotePTYRelay,
-                panelId: newPanel.id,
-                label: title
-            )
+        if let remoteSSHContext {
+            if let sid = remoteSSHContext.sshSurfaceID {
+                remoteSurfaceIdByPanelId[newPanel.id] = sid
+            }
         }
         seedTerminalInheritanceFontPoints(panelId: newPanel.id, configTemplate: inheritedConfig)
 
@@ -5612,7 +5788,7 @@ final class Workspace: Identifiable, ObservableObject {
             if trackAsRemoteTerminal {
                 untrackRemoteTerminalSurface(newPanel.id)
             }
-            releaseRemoteTerminalPTYRelay(forPanelId: newPanel.id, reason: "createTab.failed")
+            remoteSurfaceIdByPanelId.removeValue(forKey: newPanel.id)
             terminalInheritanceFontPointsByPanelId.removeValue(forKey: newPanel.id)
             return nil
         }
@@ -8504,19 +8680,52 @@ final class Workspace: Identifiable, ObservableObject {
         initialInput: String?,
         remoteStartupCommand: String? = nil
     ) -> TerminalPanel? {
-        var inheritedConfig = inheritedTerminalConfig(inPane: paneId)
+        let inheritedConfig = inheritedTerminalConfig(inPane: paneId)
         let requestedRemoteStartupCommand = remoteStartupCommand?.trimmingCharacters(in: .whitespacesAndNewlines)
         let legacyRemoteCommand = requestedRemoteStartupCommand?.isEmpty == false ? requestedRemoteStartupCommand : nil
 
-        // M4: prefer the libghostty SSH path when this is a remote workspace
-        // that's already connected. The caller still passes the legacy bash
-        // bootstrap as a fallback in case the relay can't be allocated.
-        let pendingRemotePTYRelay = (legacyRemoteCommand == nil)
-            ? prepareRemoteTerminalPTYRelay()
+        // Serialize remote-workspace splits around `liveDaemonGroupID`.
+        // See the doc on `pendingRemoteSurfaceQueue` for the rationale.
+        let shouldGate = isRemoteWorkspace && legacyRemoteCommand == nil
+        var createdPanel: TerminalPanel?
+        let ran = gateRemoteTerminalSurfaceCreation { [self] in
+            createdPanel = splitPaneWithNewTerminalImpl(
+                paneId: paneId,
+                orientation: orientation,
+                insertFirst: insertFirst,
+                workingDirectory: workingDirectory,
+                initialInput: initialInput,
+                inheritedConfig: inheritedConfig,
+                legacyRemoteCommand: legacyRemoteCommand
+            )
+        }
+        if shouldGate && !ran {
+            return nil
+        }
+        return createdPanel
+    }
+
+    /// Inner body of `splitPaneWithNewTerminal`. Extracted so the gating
+    /// helper can re-invoke it from the pending-creation queue.
+    private func splitPaneWithNewTerminalImpl(
+        paneId: PaneID,
+        orientation: SplitOrientation,
+        insertFirst: Bool,
+        workingDirectory: String?,
+        initialInput: String?,
+        inheritedConfig: CmuxSurfaceConfigTemplate?,
+        legacyRemoteCommand: String?
+    ) -> TerminalPanel? {
+        var inheritedConfig = inheritedConfig
+        // Route remote-workspace splits through libghostty's `Remote`
+        // termio backend by passing ssh-context fields into the surface
+        // config. If the caller supplied a legacy bash bootstrap, fall
+        // back to running that locally instead.
+        let remoteSSHContext = (legacyRemoteCommand == nil)
+            ? prepareRemoteSurfaceSSHContext()
             : nil
-        let pendingRemotePTYRelayCommand = pendingRemotePTYRelay?.surfaceCommand
-        let startupCommand = pendingRemotePTYRelayCommand ?? legacyRemoteCommand
-        let trackAsRemoteTerminal = pendingRemotePTYRelay != nil || legacyRemoteCommand != nil
+        let startupCommand = remoteSSHContext == nil ? legacyRemoteCommand : nil
+        let trackAsRemoteTerminal = remoteSSHContext != nil || legacyRemoteCommand != nil
         if startupCommand != nil {
             var template = inheritedConfig ?? CmuxSurfaceConfigTemplate()
             template.waitAfterCommand = true
@@ -8530,20 +8739,24 @@ final class Workspace: Identifiable, ObservableObject {
             workingDirectory: workingDirectory,
             portOrdinal: portOrdinal,
             initialCommand: startupCommand,
-            initialInput: initialInput
+            initialInput: initialInput,
+            sshTarget: remoteSSHContext?.sshTarget,
+            sshSessionID: remoteSSHContext?.sshSessionID,
+            sshSurfaceID: remoteSSHContext?.sshSurfaceID.map { hexUUID($0) },
+            sshLabel: remoteSSHContext?.sshLabel,
+            sshGroupID: remoteSSHContext?.sshGroupID
         )
         configureTerminalPanel(newPanel)
+        bindRemoteOpenedCallback(for: newPanel)
         panels[newPanel.id] = newPanel
         panelTitles[newPanel.id] = newPanel.displayTitle
         if trackAsRemoteTerminal {
             trackRemoteTerminalSurface(newPanel.id)
         }
-        if let pendingRemotePTYRelay {
-            attachRemoteTerminalRelay(
-                pendingRemotePTYRelay,
-                panelId: newPanel.id,
-                label: title
-            )
+        if let remoteSSHContext {
+            if let sid = remoteSSHContext.sshSurfaceID {
+                remoteSurfaceIdByPanelId[newPanel.id] = sid
+            }
         }
         seedTerminalInheritanceFontPoints(panelId: newPanel.id, configTemplate: inheritedConfig)
 
@@ -8565,7 +8778,7 @@ final class Workspace: Identifiable, ObservableObject {
             if trackAsRemoteTerminal {
                 untrackRemoteTerminalSurface(newPanel.id)
             }
-            releaseRemoteTerminalPTYRelay(forPanelId: newPanel.id, reason: "splitPane.failed")
+            remoteSurfaceIdByPanelId.removeValue(forKey: newPanel.id)
             terminalInheritanceFontPointsByPanelId.removeValue(forKey: newPanel.id)
             return nil
         }

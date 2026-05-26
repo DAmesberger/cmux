@@ -322,7 +322,7 @@ extension Workspace {
         }
 
         panels.removeValue(forKey: panelId)
-        releaseRemoteTerminalPTYRelay(forPanelId: panelId, reason: "panel.close")
+        forgetRemoteSurfaceId(forPanelId: panelId)
         untrackRemoteTerminalSurface(panelId)
         pendingRemoteTerminalChildExitSurfaceIds.remove(panelId)
         if let tabId {

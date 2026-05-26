@@ -5995,6 +5995,7 @@ struct CMUXCLI {
         let port: Int?
         let identityFile: String?
         let workspaceName: String?
+        let workspaceColor: String?
         let windowRaw: String?
         let noFocus: Bool
         let sshOptions: [String]
@@ -6011,6 +6012,7 @@ struct CMUXCLI {
             port: Int?,
             identityFile: String?,
             workspaceName: String?,
+            workspaceColor: String? = nil,
             windowRaw: String? = nil,
             noFocus: Bool,
             sshOptions: [String],
@@ -6024,6 +6026,7 @@ struct CMUXCLI {
             self.port = port
             self.identityFile = identityFile
             self.workspaceName = workspaceName
+            self.workspaceColor = workspaceColor
             self.windowRaw = windowRaw
             self.noFocus = noFocus
             self.sshOptions = sshOptions
@@ -6261,9 +6264,21 @@ struct CMUXCLI {
             "extraArgs=\(sshOptions.extraArguments.count)"
         )
 
+        // M6 legacy-bash-bootstrap removal: do NOT pass the bash
+        // ssh-wrapper script as initial_command. We also tell
+        // `workspace.create` to skip the initial terminal surface —
+        // the Workspace will spawn one itself once the libghostty SSH
+        // integration reaches `.connected`, at which point the
+        // PTY-relay gate passes and the very first terminal is wired
+        // through the daemon rather than a local shell.
         var workspaceCreateParams: [String: Any] = [
-            "initial_command": initialSSHStartupCommand,
+            "skip_initial_surface": true,
         ]
+        _ = initialSSHStartupCommand
+        if let workspaceColor = sshOptions.workspaceColor?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !workspaceColor.isEmpty {
+            workspaceCreateParams["color"] = workspaceColor
+        }
         try applyWindowOrCallerContext(to: &workspaceCreateParams, client: client, windowRaw: sshOptions.windowRaw)
 
         let workspaceCreateStartedAt = Date()
@@ -6291,10 +6306,19 @@ struct CMUXCLI {
                 ])
             }
 
+            // M6 legacy-bash-bootstrap removal: always request
+            // auto_connect=true so cmux's libghostty SSH integration
+            // starts immediately. The CLI previously passed
+            // `auto_connect=false` whenever it had cooked up a
+            // deferred-reconnect script (the bash bootstrap), which
+            // suppressed sshIntegration entirely and forced every
+            // remote terminal to flow through the wrapper script's
+            // /usr/bin/ssh subprocess. With the bootstrap gone, the
+            // libghostty path is the only path.
             var configureParams: [String: Any] = [
                 "workspace_id": workspaceId,
                 "destination": sshOptions.displayDestination,
-                "auto_connect": deferredRemoteReconnectCommandScript == nil,
+                "auto_connect": true,
             ]
             if let configuredForegroundAuthToken {
                 configureParams["foreground_auth_token"] = configuredForegroundAuthToken
@@ -6314,7 +6338,12 @@ struct CMUXCLI {
                 configureParams["relay_token"] = relayToken
                 configureParams["local_socket_path"] = sshOptions.localSocketPath
             }
-            configureParams["terminal_startup_command"] = reusableTerminalStartupCommand
+            // M6: terminal_startup_command was the legacy bash-bootstrap
+            // payload used to spawn split panes via the same ssh-wrapper
+            // script. The libghostty PTY-relay attaches new terminals
+            // through the daemon directly, so this param is dropped from
+            // outgoing configure calls. (The v2 handler never read it.)
+            _ = reusableTerminalStartupCommand
             if sshOptions.skipDaemonBootstrap {
                 configureParams["skip_daemon_bootstrap"] = true
             }
@@ -6403,6 +6432,7 @@ struct CMUXCLI {
         var port: Int?
         var identityFile: String?
         var workspaceName: String?
+        var workspaceColor: String?
         var windowRaw: String?
         var noFocus = false
         var sshOptions: [String] = []
@@ -6442,6 +6472,15 @@ struct CMUXCLI {
                     throw CLIError(message: "ssh: --name requires a workspace title")
                 }
                 workspaceName = commandArgs[index + 1]
+                index += 2
+            case "--color":
+                guard index + 1 < commandArgs.count else {
+                    throw CLIError(message: "ssh: --color requires a value (palette name or hex)")
+                }
+                let raw = commandArgs[index + 1].trimmingCharacters(in: .whitespacesAndNewlines)
+                if !raw.isEmpty {
+                    workspaceColor = raw
+                }
                 index += 2
             case "--window":
                 guard index + 1 < commandArgs.count else {
@@ -6487,6 +6526,7 @@ struct CMUXCLI {
             port: port,
             identityFile: identityFile,
             workspaceName: workspaceName,
+            workspaceColor: workspaceColor,
             windowRaw: windowRaw ?? windowOverride,
             noFocus: noFocus,
             sshOptions: sshOptions,

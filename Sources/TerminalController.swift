@@ -4864,6 +4864,14 @@ class TerminalController {
         let title = (requestedTitle?.isEmpty == false) ? requestedTitle : nil
         let description = v2RawString(params, "description")
 
+        // Optional color: accepts a palette name (e.g. "Red") or a hex value
+        // (e.g. "#C0392B"). Resolved against the user's effective palette so a
+        // renamed/recolored entry still maps to the user's chosen hex.
+        let requestedColor = v2RawString(params, "color")?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedColorHex: String? = (requestedColor?.isEmpty == false)
+            ? WorkspaceTabColorSettings.resolvedColorHex(requestedColor!)
+            : nil
+
         // Decode optional layout param (same JSON schema as cmux.json layout field).
         // Validate before creating the workspace so malformed layouts fail fast.
         var layoutNode: CmuxLayoutNode?
@@ -4879,6 +4887,7 @@ class TerminalController {
             }
         }
 
+        let skipInitialSurface = v2Bool(params, "skip_initial_surface") ?? false
         var newId: UUID?
         let shouldFocus = v2FocusAllowed(requested: v2Bool(params, "focus") ?? false)
         v2MainSync {
@@ -4888,9 +4897,13 @@ class TerminalController {
                 initialTerminalCommand: layoutNode == nil ? initialCommand : nil,
                 initialTerminalEnvironment: layoutNode == nil ? initialEnv : [:],
                 select: shouldFocus,
-                eagerLoadTerminal: !shouldFocus
+                eagerLoadTerminal: !shouldFocus,
+                skipInitialSurface: skipInitialSurface
             )
             ws.setCustomDescription(description)
+            if let resolvedColorHex {
+                ws.setCustomColor(resolvedColorHex)
+            }
             if let layoutNode {
                 ws.applyCustomLayout(layoutNode, baseCwd: cwd ?? ws.currentDirectory)
             }

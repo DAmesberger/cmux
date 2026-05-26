@@ -4852,6 +4852,40 @@ final class TerminalSurface: Identifiable, ObservableObject {
     let tmuxStartCommand: String?
     let initialInput: String?
     private let initialEnvironmentOverrides: [String: String]
+    /// SSH connection target (e.g. "user@host"). When set the runtime
+    /// surface is bound to the libghostty `Remote` termio backend via the
+    /// matching `SshConnectionManager.Entry` rather than spawning a local
+    /// PTY. Mirrors GTK's per-surface `ssh_ctx` plumbing.
+    let sshTarget: String?
+    /// Stable embedder-chosen session identifier (cmux passes the
+    /// workspace UUID hex). Drives the daemon's session_attach by-label /
+    /// create-on-miss path so the first terminal opens a new group named
+    /// after `sshLabel` and subsequent terminals attach to it. Replaces
+    /// the previous `sshGroupID` plumbing — the daemon does not recognize
+    /// cmux-side group UUIDs and would reject surface_attach with "group
+    /// not found".
+    let sshSessionID: String?
+    /// 32-char hex surface id. When set asks the daemon to reattach an
+    /// existing surface (replays scrollback + cursor).
+    let sshSurfaceID: String?
+    /// Human-readable label shown in the daemon session list and used by
+    /// the daemon as the create-or-attach key when no group matches.
+    let sshLabel: String?
+    /// Optional 32-char hex daemon-authoritative group id. Used by
+    /// cmux for the SECOND and subsequent terminals of a workspace once
+    /// the first terminal's `opened` reply has populated
+    /// `Workspace.liveDaemonGroupID`. When set, `sshSessionID` must be
+    /// nil; the combination makes `termio.Remote` emit `surface_new`
+    /// (new PTY in the same group) instead of `session_attach` (which
+    /// would reattach the existing PTY and produce a shared shell).
+    let sshGroupID: String?
+    /// Closure invoked when libghostty's `on_remote_opened` C callback
+    /// fires for this surface — i.e. when the daemon acknowledges our
+    /// open request and reports back the authoritative `group_id` /
+    /// `surface_id`. Set by `Workspace.bindRemoteOpenedCallback(for:)`
+    /// so the workspace can promote the daemon group_id to subsequent
+    /// surfaces. Invoked on the main actor.
+    var remoteOpenedHandler: ((UUID, UUID) -> Void)?
     var requestedWorkingDirectory: String? { workingDirectory }
     let focusPlacement: TerminalSurfaceFocusPlacement
     private var additionalEnvironment: [String: String]
@@ -4961,7 +4995,12 @@ final class TerminalSurface: Identifiable, ObservableObject {
         initialInput: String? = nil,
         initialEnvironmentOverrides: [String: String] = [:],
         additionalEnvironment: [String: String] = [:],
-        focusPlacement: TerminalSurfaceFocusPlacement = .workspace
+        focusPlacement: TerminalSurfaceFocusPlacement = .workspace,
+        sshTarget: String? = nil,
+        sshSessionID: String? = nil,
+        sshSurfaceID: String? = nil,
+        sshLabel: String? = nil,
+        sshGroupID: String? = nil
     ) {
         #if DEBUG
         dispatchPrecondition(condition: .onQueue(.main))
@@ -4982,6 +5021,16 @@ final class TerminalSurface: Identifiable, ObservableObject {
         self.initialEnvironmentOverrides = Self.mergedNormalizedEnvironment(base: [:], overrides: initialEnvironmentOverrides)
         self.additionalEnvironment = Self.mergedNormalizedEnvironment(base: [:], overrides: additionalEnvironment)
         self.focusPlacement = focusPlacement
+        let trimmedSSHTarget = sshTarget?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.sshTarget = (trimmedSSHTarget?.isEmpty == false) ? trimmedSSHTarget : nil
+        let trimmedSSHSessionID = sshSessionID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.sshSessionID = (trimmedSSHSessionID?.isEmpty == false) ? trimmedSSHSessionID : nil
+        let trimmedSSHSurfaceID = sshSurfaceID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.sshSurfaceID = (trimmedSSHSurfaceID?.isEmpty == false) ? trimmedSSHSurfaceID : nil
+        let trimmedSSHLabel = sshLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.sshLabel = (trimmedSSHLabel?.isEmpty == false) ? trimmedSSHLabel : nil
+        let trimmedSSHGroupID = sshGroupID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.sshGroupID = (trimmedSSHGroupID?.isEmpty == false) ? trimmedSSHGroupID : nil
         // Match Ghostty's own SurfaceView: ensure a non-zero initial frame so the backing layer
         // has non-zero bounds and the renderer can initialize without presenting a blank/stretched
         // intermediate frame on the first real resize.
@@ -5878,14 +5927,73 @@ final class TerminalSurface: Identifiable, ObservableObject {
             return value.withCString(body)
         }
 
-        let createWithCommandAndWorkingDirectory = {
+        // Install the libghostty `on_remote_opened` C callback. The
+        // userdata is the same `GhosttySurfaceCallbackContext` pointer
+        // used by every other surface callback; the trampoline reads
+        // back the `TerminalSurface` and forwards to the workspace-
+        // installed `remoteOpenedHandler` closure. Fires zero or one
+        // time per surface.
+        surfaceConfig.on_remote_opened = { userdata, groupIdPtr, surfaceIdPtr in
+            guard let userdata, let groupIdPtr, let surfaceIdPtr else { return }
+            // Copy the 16-byte UUIDs out of the libghostty-owned buffer
+            // before any hop — the pointers are only valid for the
+            // duration of the callback (the libghostty docstring says
+            // so explicitly).
+            let groupBytes = UnsafeBufferPointer(start: groupIdPtr, count: 16)
+            let surfaceBytes = UnsafeBufferPointer(start: surfaceIdPtr, count: 16)
+            let groupUUID = UUID(uuid: (
+                groupBytes[0], groupBytes[1], groupBytes[2], groupBytes[3],
+                groupBytes[4], groupBytes[5], groupBytes[6], groupBytes[7],
+                groupBytes[8], groupBytes[9], groupBytes[10], groupBytes[11],
+                groupBytes[12], groupBytes[13], groupBytes[14], groupBytes[15]
+            ))
+            let surfaceUUID = UUID(uuid: (
+                surfaceBytes[0], surfaceBytes[1], surfaceBytes[2], surfaceBytes[3],
+                surfaceBytes[4], surfaceBytes[5], surfaceBytes[6], surfaceBytes[7],
+                surfaceBytes[8], surfaceBytes[9], surfaceBytes[10], surfaceBytes[11],
+                surfaceBytes[12], surfaceBytes[13], surfaceBytes[14], surfaceBytes[15]
+            ))
+            let unmanaged = Unmanaged<GhosttySurfaceCallbackContext>.fromOpaque(userdata)
+            let ctx = unmanaged.takeUnretainedValue()
+            DispatchQueue.main.async {
+                ctx.terminalSurface?.remoteOpenedHandler?(groupUUID, surfaceUUID)
+            }
+        }
+
+        let createWithCommandAndWorkingDirectory = { [self] in
             withOptionalCString(resolvedCommand) { cCommand in
                 surfaceConfig.command = cCommand
                 withOptionalCString(resolvedWorkingDirectory) { cWorkingDir in
                     surfaceConfig.working_directory = cWorkingDir
                     withOptionalCString(resolvedInitialInput) { cInitialInput in
                         surfaceConfig.initial_input = cInitialInput
-                        createSurface()
+                        withOptionalCString(self.sshTarget) { cSshTarget in
+                            surfaceConfig.ssh_target = cSshTarget
+                            withOptionalCString(self.sshGroupID) { cSshGroup in
+                                // For the FIRST terminal of a workspace
+                                // `sshGroupID` is nil and `sshSessionID`
+                                // drives the daemon's session_attach
+                                // by-label / create-on-miss path. For
+                                // the second and subsequent terminals
+                                // `sshGroupID` is set to the daemon-
+                                // authoritative group_id (learned via
+                                // `on_remote_opened`) and `sshSessionID`
+                                // is nil — this makes Remote.zig emit
+                                // `surface_new` so each terminal gets
+                                // its own PTY in the same group.
+                                surfaceConfig.ssh_group_id = cSshGroup
+                                withOptionalCString(self.sshSessionID) { cSshSession in
+                                    surfaceConfig.ssh_session_id = cSshSession
+                                    withOptionalCString(self.sshSurfaceID) { cSshSurface in
+                                        surfaceConfig.ssh_surface_id = cSshSurface
+                                        withOptionalCString(self.sshLabel) { cSshLabel in
+                                            surfaceConfig.ssh_label = cSshLabel
+                                            createSurface()
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

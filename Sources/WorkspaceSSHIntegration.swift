@@ -4,17 +4,17 @@ import GhosttyKit
 
 /// Per-workspace coordinator that owns the `Ghostty.SSHConnection` for one remote workspace.
 ///
-/// Track C populates `sessionBridges` and `portForwards` via `attachTerminal` and
-/// `openPortForward`. Track E installs `discoveryCoordinator`. Track A (this file) owns
-/// the connection lifecycle and the management methods those tracks call.
+/// Terminal surfaces now run libghostty's native `Remote` termio backend via
+/// surface-config fields (`ssh_target`/`ssh_session_id`/`ssh_surface_id`/
+/// `ssh_label`), so this type no longer owns per-terminal bridges. It keeps
+/// the SSH connection alive for the browser proxy + port-forward channels
+/// and surfaces session management commands used by the command palette.
 @MainActor
 final class WorkspaceSSHIntegration {
     let connection: Ghostty.SSHConnection
     @Published private(set) var connectionState: Ghostty.ConnectionState
 
-    /// Terminal session bridges keyed by the terminal panel's surfaceID. Track C populates this.
-    var sessionBridges: [UUID: SessionBridge] = [:]
-    /// Port forward handles keyed by PortForwardID. Track C populates this.
+    /// Port forward handles keyed by PortForwardID.
     var portForwards: [PortForwardID: PortForwardHandle] = [:]
     /// Session discovery + color-sync coordinator. Track E installs this.
     var discoveryCoordinator: AnyObject? {
@@ -50,37 +50,13 @@ final class WorkspaceSSHIntegration {
         _discoveryCoordinator?.stop()
         _discoveryCoordinator = nil
 
-        sessionBridges.values.forEach { $0.close() }
-        sessionBridges.removeAll()
         portForwards.values.forEach { $0.close() }
         portForwards.removeAll()
 
         connection.cancelReconnect()
     }
 
-    // MARK: - Terminal channel management (Track C)
-
-    /// Open a terminal channel, wrap it in a `SessionBridge`, store it, and return it.
-    ///
-    /// The bridge is keyed by `surfaceID` so the workspace can look it up when the
-    /// panel closes. Pass `groupID: nil` for a brand-new session; pass the persisted
-    /// group UUID for session reattach across cmux restarts.
-    func attachTerminal(
-        groupID: UUID?,
-        surfaceID: UUID,
-        size: Ghostty.TerminalSize,
-        label: String
-    ) throws -> SessionBridge {
-        let bridge = try SessionBridge(
-            connection: connection,
-            groupID: groupID,
-            surfaceID: surfaceID,
-            size: size,
-            label: label
-        )
-        sessionBridges[surfaceID] = bridge
-        return bridge
-    }
+    // MARK: - Port forwards
 
     /// Open a port-listener channel, wrap it in a `PortForwardHandle`, store it, and return it.
     func openPortForward(bindHost: String, port: UInt16) throws -> PortForwardHandle {

@@ -514,6 +514,14 @@ struct cmuxApp: App {
                     }
                 }
 
+                splitCommandButton(title: String(localized: "menu.file.sshConnect", defaultValue: "New SSH Connection…"), shortcut: menuShortcut(for: .sshConnect)) {
+                    let target = NSApp.keyWindow ?? NSApp.mainWindow
+                    NotificationCenter.default.post(
+                        name: SSHActionNotification.requestConnect,
+                        object: target
+                    )
+                }
+
                 splitCommandButton(title: String(localized: "menu.file.openFolder", defaultValue: "Open Folder…"), shortcut: menuShortcut(for: .openFolder)) {
                     AppDelegate.shared?.showOpenFolderPanel()
                 }

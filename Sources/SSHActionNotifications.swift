@@ -12,6 +12,11 @@ enum SSHActionNotification {
     static let deleteSession  = Notification.Name("com.cmux.ssh.deleteSession")
     static let toggleSizeMode = Notification.Name("com.cmux.ssh.toggleSizeMode")
     static let manageSession  = Notification.Name("com.cmux.ssh.manageSession")
+    /// Posted by the File menu, the configurable shortcut, and the libghostty
+    /// `ssh_create_session` keybinding. Opens the in-app SSH Connect sheet so
+    /// the dispatch passes the cmuxOnly descendant check (the CLI is spawned
+    /// as a child of the app).
+    static let requestConnect = Notification.Name("com.cmux.ssh.requestConnect")
 
     /// UUID of the cmux workspace that dispatched the action.
     static let workspaceIDKey = "cmux.ssh.workspaceID"
@@ -40,6 +45,7 @@ final class SSHActionObserver {
             on(SSHActionNotification.deleteSession)  { [weak self] in self?.handleDeleteSession($0) },
             on(SSHActionNotification.toggleSizeMode) { _ in /* no-op: no size-mode concept in Phase 7 */ },
             on(SSHActionNotification.manageSession)  { [weak self] in self?.handleManageSession($0) },
+            on(SSHActionNotification.requestConnect) { [weak self] in self?.handleRequestConnect($0) },
         ]
     }
 
@@ -50,8 +56,17 @@ final class SSHActionObserver {
     // MARK: - Handlers
 
     private func handleCreateSession(_ note: Notification) {
-        // ssh_create_session keybinding → open palette for new/reattach session.
-        AppDelegate.shared?.requestCommandPaletteCommands(source: "ssh.createSession")
+        // ssh_create_session keybinding → open the in-app SSH Connect sheet,
+        // which spawns the cmux CLI as a child of the app (so the cmuxOnly
+        // descendant check passes — running `cmux ssh user@host` from a
+        // bare shell hits "Broken pipe, errno 32" because that check rejects
+        // non-descendant peers; see upstream issues #3089 / #4146 / #3287).
+        SSHConnectSheetPresenter.present(on: NSApp.keyWindow ?? NSApp.mainWindow)
+    }
+
+    private func handleRequestConnect(_ note: Notification) {
+        let preferred = (note.object as? NSWindow) ?? NSApp.keyWindow ?? NSApp.mainWindow
+        SSHConnectSheetPresenter.present(on: preferred)
     }
 
     private func handleSessionAttach(_ note: Notification) {

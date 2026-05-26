@@ -15,9 +15,10 @@ struct CmuxConfigFile: Codable, Sendable {
     var surfaceTabBarButtons: [CmuxSurfaceTabBarButton]?
     var commands: [CmuxCommandDefinition]
     var vault: CmuxVaultConfigDefinition?
+    var ssh: CmuxSSHConfigDefinition?
 
     private enum CodingKeys: String, CodingKey {
-        case actions, ui, notifications, newWorkspaceCommand, surfaceTabBarButtons, commands, vault
+        case actions, ui, notifications, newWorkspaceCommand, surfaceTabBarButtons, commands, vault, ssh
     }
 
     init(
@@ -27,7 +28,8 @@ struct CmuxConfigFile: Codable, Sendable {
         newWorkspaceCommand: String? = nil,
         surfaceTabBarButtons: [CmuxSurfaceTabBarButton]? = nil,
         commands: [CmuxCommandDefinition] = [],
-        vault: CmuxVaultConfigDefinition? = nil
+        vault: CmuxVaultConfigDefinition? = nil,
+        ssh: CmuxSSHConfigDefinition? = nil
     ) {
         self.actions = actions
         self.ui = ui
@@ -36,6 +38,7 @@ struct CmuxConfigFile: Codable, Sendable {
         self.surfaceTabBarButtons = surfaceTabBarButtons
         self.commands = commands
         self.vault = vault
+        self.ssh = ssh
     }
 
     init(from decoder: Decoder) throws {
@@ -83,6 +86,7 @@ struct CmuxConfigFile: Codable, Sendable {
         }
         commands = try container.decodeIfPresent([CmuxCommandDefinition].self, forKey: .commands) ?? []
         vault = try container.decodeIfPresent(CmuxVaultConfigDefinition.self, forKey: .vault)
+        ssh = try container.decodeIfPresent(CmuxSSHConfigDefinition.self, forKey: .ssh)
     }
 
     private static func normalizedActions(
@@ -155,6 +159,106 @@ struct CmuxNotificationConfigDefinition: Codable, Sendable, Hashable {
     private enum CodingKeys: String, CodingKey {
         case hooks
         case hooksMode
+    }
+}
+
+/// SSH-related defaults: keep-alive cadence, automatic reconnect attempts/interval.
+///
+/// All fields are optional. When unset, the cmux built-in defaults apply
+/// (`CmuxResolvedSSHConfig.builtIn`). Values flow into:
+///   * outgoing `cmux ssh` invocations as `--ssh-option ServerAliveInterval=…` /
+///     `ServerAliveCountMax=…` so the OS-level keep-alive runs on the remote
+///   * `WorkspaceRemoteConfiguration.keepaliveIntervalMs` for the libghostty
+///     channel-level keep-alive ping
+///   * `maxReconnectAttempts` / `reconnectIntervalMs` for libghostty's
+///     auto-reconnect state machine
+struct CmuxSSHConfigDefinition: Codable, Sendable, Hashable {
+    /// libghostty channel keep-alive ping interval (milliseconds).
+    var keepAliveIntervalMs: UInt32?
+    /// SSH `ServerAliveInterval` (seconds). Sent to remote sshd via `-o`.
+    var serverAliveInterval: UInt32?
+    /// SSH `ServerAliveCountMax`. Sent to remote sshd via `-o`.
+    var serverAliveCountMax: UInt32?
+    /// Max automatic reconnect attempts after the channel drops mid-session.
+    /// Set to 0 to disable auto-reconnect.
+    var maxReconnectAttempts: UInt32?
+    /// Base interval (ms) between automatic reconnect attempts. libghostty
+    /// applies exponential backoff on top.
+    var reconnectIntervalMs: UInt32?
+
+    private enum CodingKeys: String, CodingKey {
+        case keepAliveIntervalMs
+        case serverAliveInterval
+        case serverAliveCountMax
+        case maxReconnectAttempts
+        case reconnectIntervalMs
+    }
+
+    init(
+        keepAliveIntervalMs: UInt32? = nil,
+        serverAliveInterval: UInt32? = nil,
+        serverAliveCountMax: UInt32? = nil,
+        maxReconnectAttempts: UInt32? = nil,
+        reconnectIntervalMs: UInt32? = nil
+    ) {
+        self.keepAliveIntervalMs = keepAliveIntervalMs
+        self.serverAliveInterval = serverAliveInterval
+        self.serverAliveCountMax = serverAliveCountMax
+        self.maxReconnectAttempts = maxReconnectAttempts
+        self.reconnectIntervalMs = reconnectIntervalMs
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        keepAliveIntervalMs = try Self.positive(container, key: .keepAliveIntervalMs)
+        serverAliveInterval = try Self.positive(container, key: .serverAliveInterval)
+        serverAliveCountMax = try Self.positive(container, key: .serverAliveCountMax)
+        maxReconnectAttempts = try container.decodeIfPresent(UInt32.self, forKey: .maxReconnectAttempts)
+        reconnectIntervalMs = try Self.positive(container, key: .reconnectIntervalMs)
+    }
+
+    private static func positive(
+        _ container: KeyedDecodingContainer<CodingKeys>,
+        key: CodingKeys
+    ) throws -> UInt32? {
+        guard let value = try container.decodeIfPresent(UInt32.self, forKey: key) else { return nil }
+        guard value > 0 else {
+            throw DecodingError.dataCorruptedError(
+                forKey: key,
+                in: container,
+                debugDescription: "\(key.stringValue) must be greater than 0"
+            )
+        }
+        return value
+    }
+}
+
+/// Resolved SSH defaults — every field has a concrete value, either from the
+/// user's cmux.json or from the built-in defaults.
+struct CmuxResolvedSSHConfig: Sendable, Hashable {
+    var keepAliveIntervalMs: UInt32
+    var serverAliveInterval: UInt32
+    var serverAliveCountMax: UInt32
+    var maxReconnectAttempts: UInt32
+    var reconnectIntervalMs: UInt32
+
+    static let builtIn = CmuxResolvedSSHConfig(
+        keepAliveIntervalMs: 15_000,
+        serverAliveInterval: 20,
+        serverAliveCountMax: 2,
+        maxReconnectAttempts: 5,
+        reconnectIntervalMs: 1_000
+    )
+
+    static func resolve(from definition: CmuxSSHConfigDefinition?) -> CmuxResolvedSSHConfig {
+        let fallback = builtIn
+        return CmuxResolvedSSHConfig(
+            keepAliveIntervalMs: definition?.keepAliveIntervalMs ?? fallback.keepAliveIntervalMs,
+            serverAliveInterval: definition?.serverAliveInterval ?? fallback.serverAliveInterval,
+            serverAliveCountMax: definition?.serverAliveCountMax ?? fallback.serverAliveCountMax,
+            maxReconnectAttempts: definition?.maxReconnectAttempts ?? fallback.maxReconnectAttempts,
+            reconnectIntervalMs: definition?.reconnectIntervalMs ?? fallback.reconnectIntervalMs
+        )
     }
 }
 

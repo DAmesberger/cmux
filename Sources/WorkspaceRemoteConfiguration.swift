@@ -110,9 +110,9 @@ struct WorkspaceRemoteConfiguration: Equatable {
         identityFile: String?,
         sshOptions: [String],
         groupID: UUID = UUID(),
-        keepaliveIntervalMs: UInt32 = 15000,
-        maxReconnectAttempts: UInt32 = 0,
-        reconnectIntervalMs: UInt32 = 1000,
+        keepaliveIntervalMs: UInt32 = CmuxResolvedSSHConfig.builtIn.keepAliveIntervalMs,
+        maxReconnectAttempts: UInt32 = CmuxResolvedSSHConfig.builtIn.maxReconnectAttempts,
+        reconnectIntervalMs: UInt32 = CmuxResolvedSSHConfig.builtIn.reconnectIntervalMs,
         hostKeyPolicy: Ghostty.HostKeyHandler = .tofu,
         sessionColor: Int8 = -1,
         sessionLabel: String? = nil
@@ -184,15 +184,16 @@ extension SessionRemoteWorkspaceSnapshot {
             (1...65535).contains(port) ? port : nil
         }
 
+        let fallback = CmuxResolvedSSHConfig.builtIn
         return WorkspaceRemoteConfiguration(
             destination: normalizedDestination,
             port: normalizedPort,
             identityFile: Self.normalizedIdentityPath(identityFile),
             sshOptions: Self.normalizedSSHOptions(sshOptions),
             groupID: groupID ?? UUID(),
-            keepaliveIntervalMs: keepaliveIntervalMs ?? 15000,
-            maxReconnectAttempts: maxReconnectAttempts ?? 0,
-            reconnectIntervalMs: reconnectIntervalMs ?? 1000,
+            keepaliveIntervalMs: keepaliveIntervalMs ?? fallback.keepAliveIntervalMs,
+            maxReconnectAttempts: maxReconnectAttempts ?? fallback.maxReconnectAttempts,
+            reconnectIntervalMs: reconnectIntervalMs ?? fallback.reconnectIntervalMs,
             sessionColor: sessionColor ?? -1,
             sessionLabel: sessionLabel
         )
