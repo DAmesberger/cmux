@@ -274,26 +274,29 @@ The app has a **Debug** menu in the macOS menu bar (only in DEBUG builds). Use i
 
 ## Ghostty submodule workflow
 
-Ghostty changes must be committed in the `ghostty` submodule and pushed to the `manaflow-ai/ghostty` fork.
+Ghostty changes must be committed in the `ghostty` submodule and pushed
+to **our fork** (`DAmesberger/ghostty`, configured as `origin`).
 Keep `docs/ghostty-fork.md` up to date with any fork changes and conflict notes.
 
 ```bash
 cd ghostty
-git remote -v  # origin = upstream, manaflow = fork
+git remote -v  # origin = DAmesberger/ghostty (our fork)
 git checkout -b <branch>
 git add <files>
 git commit -m "..."
-git push manaflow <branch>
+git push origin <branch>
 ```
 
-To keep the fork up to date with upstream:
+To keep our fork up to date with upstream `ghostty/ghostty`, add and
+fetch the upstream remote ad-hoc:
 
 ```bash
 cd ghostty
-git fetch origin
+git remote add upstream https://github.com/ghostty-org/ghostty.git  # one-time
+git fetch upstream
 git checkout main
-git merge origin/main
-git push manaflow main
+git merge upstream/main
+git push origin main
 ```
 
 Then update the parent repo with the new submodule SHA:
