@@ -5046,6 +5046,14 @@ struct ContentView: View {
             }
         }
         guard !integrations.isEmpty else { return }
+        // Kick a session-list diff per integration. The continuous 8s
+        // poll in `RemoteSessionSyncCoordinator` is gone; the palette
+        // is now one of the two on-demand refresh triggers (the other
+        // is `.connected` state transitions inside
+        // `WorkspaceSSHIntegration`).
+        for (_, ssh) in integrations {
+            ssh.refreshRemoteSessions()
+        }
         commandPaletteRemoteSessionLoadTask = Task { @MainActor in
             var entries: [RemoteSessionPaletteEntry] = []
             await withTaskGroup(of: [RemoteSessionPaletteEntry].self) { group in
