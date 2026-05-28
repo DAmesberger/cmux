@@ -1271,6 +1271,10 @@ struct ContentView: View {
         let destination: String
         let groupID: UUID
         let surfaceCount: UInt32
+        /// True when the daemon reports the session as currently
+        /// attached (`SessionListStatus.attached`). Drives the palette
+        /// to dispatch a focus action instead of a reattach.
+        let isAttached: Bool
     }
 
     static func tmuxWorkspacePaneExactRect(
@@ -5062,13 +5066,22 @@ struct ContentView: View {
                     group.addTask {
                         let sessions = await ssh.listSessionsForPalette()
                         return sessions.compactMap { session -> RemoteSessionPaletteEntry? in
-                            guard session.surfaceCount == 0 else { return nil }
+                            // Skip dead sessions — they can't be focused or
+                            // reattached. Attached + detached both surface;
+                            // the entry's isAttached drives whether the
+                            // palette command focuses an existing workspace
+                            // or asks for a fresh attach.
+                            switch session.status {
+                            case .dead: return nil
+                            case .attached, .detached: break
+                            }
                             return RemoteSessionPaletteEntry(
                                 id: session.groupID,
                                 label: session.label.isEmpty ? dest : session.label,
                                 destination: dest,
                                 groupID: session.groupID,
-                                surfaceCount: session.surfaceCount
+                                surfaceCount: session.surfaceCount,
+                                isAttached: session.status == .attached
                             )
                         }
                     }
@@ -6185,13 +6198,25 @@ struct ContentView: View {
         for entry in commandPaletteRemoteSessionEntries {
             let entryGroupID = entry.groupID
             let entryDestination = entry.destination
+            // Attached sessions get a "Focus:" verb (the workspace is
+            // already mounted somewhere in this cmux), detached ones
+            // get "Reattach:" (will be opened in a new workspace).
+            // Both go through `reattachOrFocusRemoteSession` which
+            // already picks the right code path based on whether a
+            // workspace with that groupID exists.
+            let titlePrefix = entry.isAttached
+                ? String(localized: "commandPalette.remoteSession.focus", defaultValue: "Focus")
+                : String(localized: "commandPalette.remoteSession.reattach", defaultValue: "Reattach")
+            let subtitleSuffix = entry.isAttached
+                ? String(localized: "commandPalette.remoteSession.attached", defaultValue: "attached")
+                : String(localized: "commandPalette.remoteSession.detached", defaultValue: "detached")
             let commandId = "remote.reattach.\(entry.id.uuidString.lowercased())"
             commands.append(
                 CommandPaletteCommand(
                     id: commandId,
                     rank: nextRank,
-                    title: "Reattach: \(entry.label)",
-                    subtitle: "Remote session on \(entryDestination)",
+                    title: "\(titlePrefix): \(entry.label)",
+                    subtitle: "Remote session on \(entryDestination) · \(subtitleSuffix)",
                     shortcutHint: nil,
                     kindLabel: String(localized: "commandPalette.kind.remoteSession", defaultValue: "Remote Session"),
                     keywords: ["reattach", "remote", "session", "ssh", entry.label, entryDestination],
