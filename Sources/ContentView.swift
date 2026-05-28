@@ -13326,6 +13326,36 @@ private struct TabItemView: View, Equatable {
                 }
             }
             .disabled(allRemoteContextMenuTargetsDisconnected)
+
+            // Remote session management. Posts the same notifications
+            // that libghostty's `ssh_rename_session` /
+            // `ssh_delete_session` actions post — `SSHActionObserver`
+            // owns the confirm-alert flow so the surface chrome and
+            // the in-terminal keybinding stay in sync (shared-behavior
+            // policy in CLAUDE.md).
+            if !isMulti, let targetId = targetIds.first {
+                Button(String(
+                    localized: "contextMenu.renameRemoteSession",
+                    defaultValue: "Rename Remote Session…"
+                )) {
+                    NotificationCenter.default.post(
+                        name: SSHActionNotification.renameSession,
+                        object: nil,
+                        userInfo: [SSHActionNotification.workspaceIDKey: targetId]
+                    )
+                }
+
+                Button(String(
+                    localized: "contextMenu.killRemoteSession",
+                    defaultValue: "Kill Remote Session…"
+                )) {
+                    NotificationCenter.default.post(
+                        name: SSHActionNotification.deleteSession,
+                        object: nil,
+                        userInfo: [SSHActionNotification.workspaceIDKey: targetId]
+                    )
+                }
+            }
         }
 
         Menu(String(localized: "contextMenu.workspaceSettings", defaultValue: "Workspace Settings")) {
