@@ -1,0 +1,124 @@
+name: Release macOS app (fork — unsigned)
+
+# Tier-0 release pipeline for the DAmesberger fork.
+#
+# Builds a universal (arm64 + x86_64) Release cmux, ad-hoc signs it
+# (no Apple Developer Program required), zips the bundle, and
+# attaches it to the GitHub release for the pushed tag.
+#
+# End users download the ZIP, unpack it into /Applications, and run
+# `xattr -dr com.apple.quarantine /Applications/cmux.app` once to
+# clear Gatekeeper. (Or right-click → Open the first time.)
+#
+# Tag naming: anything matching `v*-fork` triggers this workflow, so
+# regular `v*` tags (used by upstream's signed/notarized release.yml
+# at manaflow-ai/cmux) don't fire it on the fork. Push e.g.
+# `v0.16.0-fork` to ship.
+#
+# Upgrade path to Tier 2 (signed + notarized): once a Developer ID
+# is in hand, swap this workflow back to the full `release.yml` and
+# add the seven Apple secrets.
+
+on:
+  push:
+    tags:
+      - "v*-fork"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          XCODE_APP="$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -n 1)"
+          if [ -z "$XCODE_APP" ]; then
+            echo "No Xcode.app found on runner" >&2
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-path
+
+      - name: Install build deps
+        run: |
+          set -euo pipefail
+          brew update >/dev/null
+          # gettext provides msgfmt — ghostty's locale install step needs it.
+          brew install gettext zig
+
+      - name: Build GhosttyKit.xcframework
+        run: |
+          set -euo pipefail
+          cd ghostty
+          zig build \
+            -Demit-xcframework=true \
+            -Dxcframework-target=universal \
+            -Doptimize=ReleaseFast
+
+      - name: Build universal cmux (Release, ad-hoc signed)
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project cmux.xcodeproj \
+            -scheme cmux \
+            -configuration Release \
+            -derivedDataPath build-universal \
+            -destination 'generic/platform=macOS' \
+            ARCHS="arm64 x86_64" \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Verify binary architectures
+        run: |
+          set -euo pipefail
+          APP_BINARY="build-universal/Build/Products/Release/cmux.app/Contents/MacOS/cmux"
+          ARCHS_OUT="$(lipo -archs "$APP_BINARY")"
+          echo "cmux architectures: $ARCHS_OUT"
+          [[ "$ARCHS_OUT" == *arm64* && "$ARCHS_OUT" == *x86_64* ]]
+
+      - name: Package as ZIP
+        run: |
+          set -euo pipefail
+          APP_PATH="build-universal/Build/Products/Release/cmux.app"
+          # Use ditto so resource forks and extended attributes survive.
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" cmux-macos-fork.zip
+          ls -la cmux-macos-fork.zip
+
+      - name: Upload build artifact (dry-run on workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cmux-macos-fork
+          path: cmux-macos-fork.zip
+          if-no-files-found: error
+
+      - name: Upload to GitHub release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: cmux-macos-fork.zip
+          generate_release_notes: true
+          body: |
+            **Unsigned fork build** — no Apple Developer ID. First-run setup:
+
+            ```
+            unzip cmux-macos-fork.zip -d /Applications/
+            xattr -dr com.apple.quarantine /Applications/cmux.app
+            open /Applications/cmux.app
+            ```
+
+            Or right-click → Open the first time to bypass Gatekeeper.
