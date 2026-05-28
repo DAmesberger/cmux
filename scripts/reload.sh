@@ -697,6 +697,46 @@ if [[ -x "$CMUXD_SRC" ]]; then
   cp "$CMUXD_SRC" "$BIN_DIR/cmuxd"
   chmod +x "$BIN_DIR/cmuxd"
 fi
+
+# Cross-build the Linux x86_64 ghostty-daemon and bundle it into the
+# app at `Contents/Resources/ghostty-daemon-<os>-<arch>`. cmux's
+# `findLocalDaemon` finds it there, and the hash-aware
+# `remoteBinaryMatchesLocalHash` check in `ensureRemoteGhostty`
+# auto-redeploys to the remote whenever this binary changes — no
+# manual scp, no /tmp marker file, no env-var dance.
+#
+# Build is skipped if `CMUX_SKIP_DAEMON_BUILD=1` or if ghostty/
+# isn't checked out. The cross-build needs zig 0.15.x; set
+# `CMUX_DAEMON_TARGET` to override the default `x86_64-linux-gnu`.
+# The bundled name encodes the normalized target so future builds
+# could ship binaries for multiple platforms in the same bundle.
+if [[ -d "$PWD/ghostty" && "${CMUX_SKIP_DAEMON_BUILD:-}" != "1" ]]; then
+  DAEMON_TARGET="${CMUX_DAEMON_TARGET:-x86_64-linux-gnu}"
+  (cd "$PWD/ghostty" && zig build \
+      -Demit-daemon=true \
+      "-Dtarget=$DAEMON_TARGET" \
+      -Dapp-runtime=none \
+      -Doptimize=ReleaseFast) 2>&1 | tail -5
+  DAEMON_BIN="$PWD/ghostty/zig-out/bin/ghostty-daemon"
+  if [[ -x "$DAEMON_BIN" ]]; then
+    case "$DAEMON_TARGET" in
+      x86_64-linux*)   BUNDLE_NAME="ghostty-daemon-linux-x86_64" ;;
+      aarch64-linux*)  BUNDLE_NAME="ghostty-daemon-linux-aarch64" ;;
+      x86_64-macos*)   BUNDLE_NAME="ghostty-daemon-macos-x86_64" ;;
+      aarch64-macos*)  BUNDLE_NAME="ghostty-daemon-macos-aarch64" ;;
+      *)               BUNDLE_NAME="ghostty-daemon" ;;
+    esac
+    RES_DIR="$APP_PATH/Contents/Resources"
+    mkdir -p "$RES_DIR"
+    cp "$DAEMON_BIN" "$RES_DIR/$BUNDLE_NAME"
+    chmod +x "$RES_DIR/$BUNDLE_NAME"
+    echo "ghostty-daemon ($DAEMON_TARGET) bundled: $RES_DIR/$BUNDLE_NAME"
+  else
+    echo "warning: ghostty-daemon cross-build produced no binary at $DAEMON_BIN" >&2
+  fi
+fi
+# Drop any stale marker file from earlier reload.sh versions.
+rm -f /tmp/cmux-last-ghostty-daemon-path 2>/dev/null || true
 if command -v xattr >/dev/null 2>&1; then
   xattr -cr "$APP_PATH" || true
 fi

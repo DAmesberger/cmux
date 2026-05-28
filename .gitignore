@@ -12,6 +12,11 @@ xcuserdata/
 .env
 .envrc
 !web/.envrc
+# Repo-root .envrc IS tracked — it bootstraps the Nix dev shell via
+# direnv. Per-user state (cached evaluations, lockfiles direnv writes)
+# stays out of git.
+!/.envrc
+.direnv/
 
 # Swift Package Manager
 .swiftpm/

@@ -69,6 +69,7 @@ nonisolated struct SessionRemoteWorkspaceSnapshot: Codable, Equatable, Sendable 
     var keepaliveIntervalMs: UInt32?
     var maxReconnectAttempts: UInt32?
     var reconnectIntervalMs: UInt32?
+    var reconnectMaxIntervalMs: UInt32?
     var sessionColor: Int8?
     var sessionLabel: String?
 }
@@ -83,6 +84,7 @@ struct WorkspaceRemoteConfiguration: Equatable {
         lhs.keepaliveIntervalMs == rhs.keepaliveIntervalMs &&
         lhs.maxReconnectAttempts == rhs.maxReconnectAttempts &&
         lhs.reconnectIntervalMs == rhs.reconnectIntervalMs &&
+        lhs.reconnectMaxIntervalMs == rhs.reconnectMaxIntervalMs &&
         lhs.sessionColor == rhs.sessionColor &&
         lhs.sessionLabel == rhs.sessionLabel
         // hostKeyPolicy excluded: .interactive case contains a non-Equatable closure
@@ -98,6 +100,7 @@ struct WorkspaceRemoteConfiguration: Equatable {
     let keepaliveIntervalMs: UInt32
     let maxReconnectAttempts: UInt32
     let reconnectIntervalMs: UInt32
+    let reconnectMaxIntervalMs: UInt32
     let hostKeyPolicy: Ghostty.HostKeyHandler
     /// Color slot from the daemon session (-1 = none, 0-7 = palette slot).
     var sessionColor: Int8
@@ -113,6 +116,7 @@ struct WorkspaceRemoteConfiguration: Equatable {
         keepaliveIntervalMs: UInt32 = CmuxResolvedSSHConfig.builtIn.keepAliveIntervalMs,
         maxReconnectAttempts: UInt32 = CmuxResolvedSSHConfig.builtIn.maxReconnectAttempts,
         reconnectIntervalMs: UInt32 = CmuxResolvedSSHConfig.builtIn.reconnectIntervalMs,
+        reconnectMaxIntervalMs: UInt32 = CmuxResolvedSSHConfig.builtIn.reconnectMaxIntervalMs,
         hostKeyPolicy: Ghostty.HostKeyHandler = .tofu,
         sessionColor: Int8 = -1,
         sessionLabel: String? = nil
@@ -125,6 +129,7 @@ struct WorkspaceRemoteConfiguration: Equatable {
         self.keepaliveIntervalMs = keepaliveIntervalMs
         self.maxReconnectAttempts = maxReconnectAttempts
         self.reconnectIntervalMs = reconnectIntervalMs
+        self.reconnectMaxIntervalMs = reconnectMaxIntervalMs
         self.hostKeyPolicy = hostKeyPolicy
         self.sessionColor = sessionColor
         self.sessionLabel = sessionLabel
@@ -171,7 +176,8 @@ struct WorkspaceRemoteConfiguration: Equatable {
             identityFile: resolvedIdentity,
             keepaliveIntervalMs: keepaliveIntervalMs,
             maxReconnectAttempts: maxReconnectAttempts,
-            reconnectIntervalMs: reconnectIntervalMs
+            reconnectIntervalMs: reconnectIntervalMs,
+            reconnectMaxIntervalMs: reconnectMaxIntervalMs
         )
     }
 }
@@ -194,6 +200,7 @@ extension SessionRemoteWorkspaceSnapshot {
             keepaliveIntervalMs: keepaliveIntervalMs ?? fallback.keepAliveIntervalMs,
             maxReconnectAttempts: maxReconnectAttempts ?? fallback.maxReconnectAttempts,
             reconnectIntervalMs: reconnectIntervalMs ?? fallback.reconnectIntervalMs,
+            reconnectMaxIntervalMs: reconnectMaxIntervalMs ?? fallback.reconnectMaxIntervalMs,
             sessionColor: sessionColor ?? -1,
             sessionLabel: sessionLabel
         )
@@ -222,6 +229,7 @@ extension WorkspaceRemoteConfiguration {
             keepaliveIntervalMs: keepaliveIntervalMs,
             maxReconnectAttempts: maxReconnectAttempts,
             reconnectIntervalMs: reconnectIntervalMs,
+            reconnectMaxIntervalMs: reconnectMaxIntervalMs,
             sessionColor: sessionColor,
             sessionLabel: sessionLabel
         )

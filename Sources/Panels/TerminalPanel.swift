@@ -3,6 +3,19 @@ import Combine
 import AppKit
 import Bonsplit
 
+/// Snapshot of a remote workspace's SSH state, narrow enough that
+/// equality is cheap and the AppKit-side hosting view can decide
+/// whether anything actually changed. Equatable so a workspace that
+/// pushes the same payload on every state tick doesn't trigger a
+/// re-mount of the hosted SwiftUI overlay.
+struct TerminalPanelRemoteOverlay: Equatable {
+    var state: WorkspaceRemoteConnectionState
+    var target: String?
+    var detail: String?
+    var provisioning: WorkspaceRemoteProvisioning?
+    var reconnect: WorkspaceRemoteReconnectInfo?
+}
+
 /// TerminalPanel wraps an existing TerminalSurface and conforms to the Panel protocol.
 /// This allows TerminalSurface to be used within the bonsplit-based layout system.
 @MainActor
@@ -30,6 +43,15 @@ final class TerminalPanel: Panel, ObservableObject {
             surface.searchState = searchState
         }
     }
+
+    /// Snapshot of the workspace's SSH connection state, pushed in from
+    /// `Workspace.applyRemoteOverlayStateToTerminalPanels`. The terminal
+    /// portal (`GhosttySurfaceScrollView`) reads this and mounts the
+    /// `RemoteReconnectOverlay` as an AppKit subview when set —
+    /// SwiftUI `.overlay {}` can't sit above portal-hosted terminal
+    /// views, so the dim + reconnect card has to live in the AppKit
+    /// layer.
+    @Published var remoteOverlay: TerminalPanelRemoteOverlay?
 
     /// Bump this token to force SwiftUI to call `updateNSView` on `GhosttyTerminalView`,
     /// which re-attaches the hosted view after bonsplit close/reparent operations.

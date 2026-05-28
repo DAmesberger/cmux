@@ -236,6 +236,9 @@ struct WorkspaceContentView: View {
                     isWorkspaceManuallyUnread: isWorkspaceManuallyUnread,
                     isWorkspaceManualUnreadRepresentative: workspaceManualUnreadPanelId == panel.id
                 )
+                let remoteState: WorkspaceRemoteConnectionState? = workspace.isRemoteWorkspace
+                    ? workspace.remoteConnectionState
+                    : nil
                 PanelContentView(
                     panel: panel,
                     workspaceId: workspace.id,
@@ -247,6 +250,19 @@ struct WorkspaceContentView: View {
                     isSplit: isSplit,
                     appearance: appearance,
                     hasUnreadNotification: showsNotificationRing && !usesWorkspacePaneOverlay,
+                    remoteConnectionState: remoteState,
+                    remoteConnectionTarget: workspace.isRemoteWorkspace
+                        ? workspace.remoteConfiguration?.displayTarget
+                        : nil,
+                    remoteConnectionDetail: workspace.isRemoteWorkspace
+                        ? workspace.remoteConnectionDetail
+                        : nil,
+                    remoteProvisioning: workspace.isRemoteWorkspace
+                        ? workspace.remoteProvisioning
+                        : nil,
+                    remoteReconnect: workspace.isRemoteWorkspace
+                        ? workspace.remoteReconnect
+                        : nil,
                     onFocus: {
                         // Keep bonsplit focus in sync with the AppKit first responder for the
                         // active workspace. This prevents divergence between the blue focused-tab

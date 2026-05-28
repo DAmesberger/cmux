@@ -10598,6 +10598,8 @@ final class GhosttySurfaceScrollView: NSView {
     private let imageTransferIndicatorSpinner: NSProgressIndicator
     private let imageTransferCancelButton: NSButton
     private var searchOverlayHostingView: NSHostingView<SurfaceSearchOverlay>?
+    private var reconnectOverlayHostingView: NSHostingView<RemoteReconnectOverlay>?
+    private var lastReconnectOverlay: TerminalPanelRemoteOverlay?
     private var deferredSearchOverlayMutationWorkItem: DispatchWorkItem?
     private var imageTransferIndicatorShowWorkItem: DispatchWorkItem?
     private var activeImageTransferOperation: TerminalImageTransferOperation?
@@ -11288,6 +11290,9 @@ final class GhosttySurfaceScrollView: NSView {
         if let overlay = searchOverlayHostingView {
             _ = setFrameIfNeeded(overlay, to: bounds)
         }
+        if let overlay = reconnectOverlayHostingView {
+            _ = setFrameIfNeeded(overlay, to: bounds)
+        }
         bringPaneDropTargetToFrontIfNeeded()
         // NSScrollView can defer clip-view/content-size updates until its own layout pass,
         // which makes interactive width changes arrive a queue turn late on Sequoia.
@@ -11889,6 +11894,81 @@ final class GhosttySurfaceScrollView: NSView {
                 force: true
             )
         }
+    }
+
+    /// Mount or update the reconnect overlay on top of the terminal
+    /// portal. Has to live in AppKit because the portal-hosted
+    /// surface sits above any SwiftUI `.overlay` modifier and would
+    /// completely obscure it. The overlay subview is parented to
+    /// `self` (`GhosttySurfaceScrollView`) so its z-order is above
+    /// the terminal contents.
+    ///
+    /// Passing `nil` (or a state of `.connected` with no provisioning)
+    /// unmounts the overlay.
+    func setReconnectOverlay(_ payload: TerminalPanelRemoteOverlay?) {
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in
+                self?.setReconnectOverlay(payload)
+            }
+            return
+        }
+
+        let shouldShow: Bool = {
+            guard let payload else { return false }
+            // Show on anything but a fully-healthy connected state.
+            switch payload.state {
+            case .connected:
+                // Provisioning can still be running mid-connect; show
+                // the upload progress card even though state is
+                // technically connected for the SSH transport.
+                return payload.provisioning != nil
+            case .connecting, .reconnecting, .error, .disconnected:
+                return true
+            }
+        }()
+
+        guard shouldShow, let payload else {
+            if reconnectOverlayHostingView != nil {
+                reconnectOverlayHostingView?.removeFromSuperview()
+                reconnectOverlayHostingView = nil
+                lastReconnectOverlay = nil
+            }
+            return
+        }
+
+        // Cheap equality check — payload comparison is structural and
+        // avoids replacing the rootView on identical ticks.
+        if let existing = reconnectOverlayHostingView,
+           existing.superview === self,
+           lastReconnectOverlay == payload {
+            _ = setFrameIfNeeded(existing, to: bounds)
+            return
+        }
+
+        let rootView = RemoteReconnectOverlay(
+            state: payload.state,
+            target: payload.target,
+            detail: payload.detail,
+            provisioning: payload.provisioning,
+            reconnect: payload.reconnect
+        )
+
+        if let existing = reconnectOverlayHostingView {
+            existing.rootView = rootView
+            existing.frame = bounds
+            existing.autoresizingMask = [.width, .height]
+            if existing.superview !== self {
+                existing.removeFromSuperview()
+                addSubview(existing)
+            }
+        } else {
+            let host = NSHostingView(rootView: rootView)
+            host.frame = bounds
+            host.autoresizingMask = [.width, .height]
+            reconnectOverlayHostingView = host
+            addSubview(host)
+        }
+        lastReconnectOverlay = payload
     }
 
     func syncKeyStateIndicator(text: String?) {
@@ -14208,6 +14288,10 @@ struct GhosttyTerminalView: NSViewRepresentable {
     var inactiveOverlayOpacity: Double = 0
     var searchState: TerminalSurface.SearchState? = nil
     var reattachToken: UInt64 = 0
+    /// Pushed from `TerminalPanelView`; mounted by the AppKit terminal
+    /// portal because SwiftUI `.overlay` cannot paint above the portal-
+    /// hosted surface.
+    var remoteOverlay: TerminalPanelRemoteOverlay? = nil
     var onFocus: ((UUID) -> Void)? = nil
     var onTriggerFlash: (() -> Void)? = nil
 
@@ -14414,6 +14498,7 @@ struct GhosttyTerminalView: NSViewRepresentable {
             )
             hostedView.setNotificationRing(visible: showsUnreadNotificationRing)
             hostedView.setSearchOverlay(searchState: searchState)
+            hostedView.setReconnectOverlay(remoteOverlay)
             hostedView.syncKeyStateIndicator(text: terminalSurface.currentKeyStateIndicatorText)
         }
         let portalExpectedSurfaceId = terminalSurface.id

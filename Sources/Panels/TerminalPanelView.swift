@@ -33,6 +33,7 @@ struct TerminalPanelView: View {
             inactiveOverlayOpacity: appearance.unfocusedOverlayOpacity,
             searchState: panel.searchState,
             reattachToken: panel.viewReattachToken,
+            remoteOverlay: panel.remoteOverlay,
             onFocus: { _ in onFocus() },
             onTriggerFlash: onTriggerFlash
         )

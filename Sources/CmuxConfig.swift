@@ -185,6 +185,10 @@ struct CmuxSSHConfigDefinition: Codable, Sendable, Hashable {
     /// Base interval (ms) between automatic reconnect attempts. libghostty
     /// applies exponential backoff on top.
     var reconnectIntervalMs: UInt32?
+    /// Upper bound on a single reconnect backoff sleep (ms). Combined with
+    /// `maxReconnectAttempts = UINT32_MAX` this gives a "patient but
+    /// persistent" reconnect: cmux never gives up but each sleep is capped.
+    var reconnectMaxIntervalMs: UInt32?
 
     private enum CodingKeys: String, CodingKey {
         case keepAliveIntervalMs
@@ -192,6 +196,7 @@ struct CmuxSSHConfigDefinition: Codable, Sendable, Hashable {
         case serverAliveCountMax
         case maxReconnectAttempts
         case reconnectIntervalMs
+        case reconnectMaxIntervalMs
     }
 
     init(
@@ -199,13 +204,15 @@ struct CmuxSSHConfigDefinition: Codable, Sendable, Hashable {
         serverAliveInterval: UInt32? = nil,
         serverAliveCountMax: UInt32? = nil,
         maxReconnectAttempts: UInt32? = nil,
-        reconnectIntervalMs: UInt32? = nil
+        reconnectIntervalMs: UInt32? = nil,
+        reconnectMaxIntervalMs: UInt32? = nil
     ) {
         self.keepAliveIntervalMs = keepAliveIntervalMs
         self.serverAliveInterval = serverAliveInterval
         self.serverAliveCountMax = serverAliveCountMax
         self.maxReconnectAttempts = maxReconnectAttempts
         self.reconnectIntervalMs = reconnectIntervalMs
+        self.reconnectMaxIntervalMs = reconnectMaxIntervalMs
     }
 
     init(from decoder: Decoder) throws {
@@ -215,6 +222,7 @@ struct CmuxSSHConfigDefinition: Codable, Sendable, Hashable {
         serverAliveCountMax = try Self.positive(container, key: .serverAliveCountMax)
         maxReconnectAttempts = try container.decodeIfPresent(UInt32.self, forKey: .maxReconnectAttempts)
         reconnectIntervalMs = try Self.positive(container, key: .reconnectIntervalMs)
+        reconnectMaxIntervalMs = try Self.positive(container, key: .reconnectMaxIntervalMs)
     }
 
     private static func positive(
@@ -241,13 +249,22 @@ struct CmuxResolvedSSHConfig: Sendable, Hashable {
     var serverAliveCountMax: UInt32
     var maxReconnectAttempts: UInt32
     var reconnectIntervalMs: UInt32
+    var reconnectMaxIntervalMs: UInt32
 
     static let builtIn = CmuxResolvedSSHConfig(
         keepAliveIntervalMs: 15_000,
         serverAliveInterval: 20,
         serverAliveCountMax: 2,
-        maxReconnectAttempts: 5,
-        reconnectIntervalMs: 1_000
+        // UInt32.max → ghostty's reconnect loop never gives up, so a
+        // tunnel/VPN that comes back after an arbitrary outage
+        // recovers automatically. The cap below keeps each sleep
+        // short so recovery happens within seconds of the network
+        // returning.
+        maxReconnectAttempts: UInt32.max,
+        // 1 s initial backoff, doubling each failed attempt
+        // (1, 2, 4, 8 — then held at 8 by the cap).
+        reconnectIntervalMs: 1_000,
+        reconnectMaxIntervalMs: 8_000
     )
 
     static func resolve(from definition: CmuxSSHConfigDefinition?) -> CmuxResolvedSSHConfig {
@@ -257,7 +274,8 @@ struct CmuxResolvedSSHConfig: Sendable, Hashable {
             serverAliveInterval: definition?.serverAliveInterval ?? fallback.serverAliveInterval,
             serverAliveCountMax: definition?.serverAliveCountMax ?? fallback.serverAliveCountMax,
             maxReconnectAttempts: definition?.maxReconnectAttempts ?? fallback.maxReconnectAttempts,
-            reconnectIntervalMs: definition?.reconnectIntervalMs ?? fallback.reconnectIntervalMs
+            reconnectIntervalMs: definition?.reconnectIntervalMs ?? fallback.reconnectIntervalMs,
+            reconnectMaxIntervalMs: definition?.reconnectMaxIntervalMs ?? fallback.reconnectMaxIntervalMs
         )
     }
 }

@@ -1746,6 +1746,48 @@ enum WorkspaceRemoteDaemonState: String {
     case error
 }
 
+/// Snapshot of an in-flight reconnect attempt. Published alongside
+/// `remoteConnectionState` so the reconnect overlay can render the
+/// current attempt number, elapsed time since the drop, and when the
+/// next try fires. Without this the overlay just says "Reconnecting…"
+/// indefinitely and the user can't tell how long they've been
+/// disconnected or that anything is happening at all.
+struct WorkspaceRemoteReconnectInfo: Equatable {
+    /// 1-based attempt counter from libghostty.
+    var attempt: UInt32
+    /// Total attempts allowed. `UInt32.max` means "infinite".
+    var maxAttempts: UInt32
+    /// Wall-clock instant the user-visible drop began. Used to
+    /// render a running "Disconnected for N s" timer.
+    var startedAt: Date
+    /// When the next reconnect attempt fires. `nil` means "now".
+    /// Drives a "Retrying in N s" countdown.
+    var nextRetryAt: Date?
+}
+
+/// Snapshot of an in-flight ghostty-daemon upload (cmux → remote host).
+/// Published alongside `remoteConnectionState` so the reconnect overlay
+/// can show "Uploading runtime…" + a progress bar instead of just an
+/// indefinite "Connecting…" spinner — uploading a 27 MB binary across
+/// a slow link can take 10+ seconds and the user otherwise has no
+/// signal anything is happening.
+struct WorkspaceRemoteProvisioning: Equatable {
+    enum Source: String {
+        case localDaemon  // bundled `ghostty-daemon-<os>-<arch>`
+        case localSelf    // libghostty's own multi-call binary
+        case github       // tagged release fallback
+    }
+
+    var bytesSent: UInt64
+    var totalBytes: UInt64
+    var source: Source
+
+    var progress: Double {
+        guard totalBytes > 0 else { return 0 }
+        return Double(bytesSent) / Double(totalBytes)
+    }
+}
+
 struct WorkspaceRemoteDaemonStatus: Equatable {
     var state: WorkspaceRemoteDaemonState = .unavailable
     var detail: String?
@@ -2366,6 +2408,24 @@ final class Workspace: Identifiable, ObservableObject {
     @Published var remoteConfiguration: WorkspaceRemoteConfiguration?
     @Published var remoteConnectionState: WorkspaceRemoteConnectionState = .disconnected
     @Published var remoteConnectionDetail: String?
+    /// Non-nil while ghostty is uploading the daemon binary to the
+    /// remote host. Drives the upload-progress UI in
+    /// `RemoteReconnectOverlay`. Cleared on `.connected` /
+    /// `.disconnected` / `.failed`.
+    @Published var remoteProvisioning: WorkspaceRemoteProvisioning?
+    /// Non-nil while ghostty is actively retrying a dropped
+    /// connection. Drives the "Disconnected for N s · attempt M"
+    /// stripe in the overlay. Cleared on `.connected` and on
+    /// explicit teardown.
+    @Published var remoteReconnect: WorkspaceRemoteReconnectInfo?
+    /// Wall-clock instant after which any `child_exited` callback for
+    /// a remote terminal panel should be treated as a *real* shell
+    /// exit. While this is in the future, child_exited is suppressed
+    /// — libghostty delivers a final child_exited for the old daemon
+    /// session after `.reconnecting → .connected`, and tearing the
+    /// panel down at that moment would discard the user's pane
+    /// layout right when the reconnect just succeeded.
+    var remoteReconnectGraceUntil: Date?
     @Published var remoteDaemonStatus: WorkspaceRemoteDaemonStatus = WorkspaceRemoteDaemonStatus()
     @Published var remoteDetectedPorts: [Int] = []
     @Published var remoteForwardedPorts: [Int] = []
@@ -3381,10 +3441,28 @@ final class Workspace: Identifiable, ObservableObject {
 
     private func applyBrowserRemoteWorkspaceStatusToPanels() {
         let snapshot = browserRemoteWorkspaceStatusSnapshot()
+        let terminalOverlay = terminalRemoteOverlaySnapshot()
         for panel in panels.values {
-            guard let browserPanel = panel as? BrowserPanel else { continue }
-            browserPanel.setRemoteWorkspaceStatus(snapshot)
+            if let browserPanel = panel as? BrowserPanel {
+                browserPanel.setRemoteWorkspaceStatus(snapshot)
+            } else if let terminalPanel = panel as? TerminalPanel {
+                terminalPanel.remoteOverlay = terminalOverlay
+            }
         }
+    }
+
+    /// Build the snapshot the terminal portal needs to mount the AppKit
+    /// reconnect overlay. Returns nil for non-remote workspaces, so the
+    /// portal unmounts the hosting view when this workspace isn't remote.
+    private func terminalRemoteOverlaySnapshot() -> TerminalPanelRemoteOverlay? {
+        guard isRemoteWorkspace else { return nil }
+        return TerminalPanelRemoteOverlay(
+            state: remoteConnectionState,
+            target: remoteConfiguration?.displayTarget,
+            detail: remoteConnectionDetail,
+            provisioning: remoteProvisioning,
+            reconnect: remoteReconnect
+        )
     }
 
     // MARK: - Panel Access
@@ -4682,6 +4760,9 @@ final class Workspace: Identifiable, ObservableObject {
         remoteLastHeartbeatAt = nil
         remoteConnectionState = .disconnected
         remoteConnectionDetail = nil
+        remoteProvisioning = nil
+        remoteReconnect = nil
+        remoteReconnectGraceUntil = nil
         remoteDaemonStatus = WorkspaceRemoteDaemonStatus()
         statusEntries.removeValue(forKey: Self.remoteErrorStatusKey)
         statusEntries.removeValue(forKey: Self.remotePortConflictStatusKey)
@@ -4693,6 +4774,33 @@ final class Workspace: Identifiable, ObservableObject {
         recomputeListeningPorts()
     }
 
+    /// Seed `remoteReconnect` with a placeholder snapshot when we're
+    /// forcing the workspace into `.reconnecting` because of a
+    /// `.failed` / `.disconnected` ghostty signal that didn't carry a
+    /// `Reconnect` payload. Without this the overlay shows
+    /// "Reconnecting…" with no elapsed counter — the user has no way
+    /// to tell the retry loop is actually still running.
+    private func seedReconnectInfoIfNeeded() {
+        if remoteReconnect == nil {
+            remoteReconnect = WorkspaceRemoteReconnectInfo(
+                attempt: 0,
+                maxAttempts: UInt32.max,
+                startedAt: Date(),
+                nextRetryAt: nil
+            )
+        }
+    }
+
+    private func provisioningSource(
+        from c: Ghostty.ConnectionState.ProvisionSource
+    ) -> WorkspaceRemoteProvisioning.Source {
+        switch c {
+        case .localDaemon: return .localDaemon
+        case .localSelf: return .localSelf
+        case .github: return .github
+        }
+    }
+
     private func handleSSHConnectionState(
         _ state: Ghostty.ConnectionState,
         configuration: WorkspaceRemoteConfiguration
@@ -4700,10 +4808,25 @@ final class Workspace: Identifiable, ObservableObject {
 #if DEBUG
         cmuxDebugLog("remote.ssh.state workspace=\(id.uuidString.prefix(5)) state=\(state)")
 #endif
+        let wasReconnecting = remoteConnectionState == .reconnecting
         switch state {
         case .connected:
             remoteConnectionState = .connected
             remoteConnectionDetail = nil
+            remoteProvisioning = nil
+            remoteReconnect = nil
+            // Open a grace window so the late child_exited that
+            // libghostty emits for the old (now dead) daemon session
+            // doesn't tear remote terminal panels down right after
+            // the user just saw "Reconnecting…" clear. The window
+            // outlives the typical surface-callback delivery delay
+            // but is short enough that a real shell exit a few
+            // seconds after reconnect still tears the panel down.
+            if wasReconnecting {
+                remoteReconnectGraceUntil = Date().addingTimeInterval(5)
+            } else {
+                remoteReconnectGraceUntil = nil
+            }
             statusEntries.removeValue(forKey: Self.remoteErrorStatusKey)
             startRemoteProxyTunnel()
             // M6: spawn the deferred initial terminal now that the SSH
@@ -4719,13 +4842,50 @@ final class Workspace: Identifiable, ObservableObject {
             }
         case .connecting:
             remoteConnectionState = .connecting
-        case .reconnecting:
+            remoteProvisioning = nil
+        case .uploading(let upload):
+            // Stay in `.connecting` from the UI/state-machine standpoint
+            // — the SSH transport is still being brought up. The overlay
+            // reads `remoteProvisioning` separately and swaps its
+            // headline + adds a progress bar when this is non-nil.
+            remoteConnectionState = .connecting
+            remoteProvisioning = WorkspaceRemoteProvisioning(
+                bytesSent: upload.bytesSent,
+                totalBytes: upload.totalBytes,
+                source: provisioningSource(from: upload.source)
+            )
+        case .reconnecting(let info):
             remoteConnectionState = .reconnecting
+            remoteProvisioning = nil
+            // Preserve the original drop instant across successive
+            // `.reconnecting` updates (libghostty fires one per
+            // attempt + one for each backoff sleep). If we already
+            // have a `remoteReconnect` snapshot, keep its
+            // `startedAt`; otherwise the drop is fresh now.
+            let startedAt = remoteReconnect?.startedAt
+                ?? Date().addingTimeInterval(-info.elapsed)
+            remoteReconnect = WorkspaceRemoteReconnectInfo(
+                attempt: info.attempt,
+                maxAttempts: info.maxAttempts,
+                startedAt: startedAt,
+                nextRetryAt: info.nextRetry
+            )
             stopRemoteProxyTunnel()
         case .failed(let failure):
-            remoteConnectionState = .error
+            // Treat any "failed" notification from libghostty as a
+            // transient drop, not a terminal state. The user has
+            // asked for relentless reconnect, so we stay in
+            // `.reconnecting` and immediately ping ghostty to retry
+            // (the reconnect loop wakes from its backoff sleep on
+            // this signal). Keeping the workspace out of `.error`
+            // also means the panel overlay never flips to
+            // "Connection lost".
             let message = failure.message ?? "SSH connection failed"
             remoteConnectionDetail = message
+            remoteProvisioning = nil
+            // Don't clear `remoteReconnect` — preserve the running
+            // "Disconnected for Ns" counter across this transient
+            // failure.
             statusEntries[Self.remoteErrorStatusKey] = SidebarStatusEntry(
                 key: Self.remoteErrorStatusKey,
                 value: "SSH error (\(configuration.displayTarget)): \(message)",
@@ -4733,9 +4893,24 @@ final class Workspace: Identifiable, ObservableObject {
                 timestamp: Date()
             )
             stopRemoteProxyTunnel()
+            remoteConnectionState = .reconnecting
+            seedReconnectInfoIfNeeded()
+            sshIntegration?.connection.requestReconnect()
         case .disconnected:
-            remoteConnectionState = .disconnected
+            // We never want to surface a "Disconnected" screen — the
+            // user wants relentless reconnect. Whatever the reason
+            // ghostty broadcast this (exhausted, cancelled, disabled),
+            // we re-arm: stay in `.reconnecting`, keep the running
+            // counter alive, and ask libghostty to wake its
+            // `waitForManualReconnect` loop and try again. The only
+            // legitimate path to `.disconnected` state is
+            // `disconnectRemoteConnection()` driven by the user
+            // explicitly closing the connection.
+            remoteProvisioning = nil
             stopRemoteProxyTunnel()
+            remoteConnectionState = .reconnecting
+            seedReconnectInfoIfNeeded()
+            sshIntegration?.connection.requestReconnect()
         default:
             break
         }

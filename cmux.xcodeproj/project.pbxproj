@@ -277,6 +277,7 @@
 		B0A501000000000000000001 /* BrowserOmnibarAppKitBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0A501000000000000000002 /* BrowserOmnibarAppKitBridge.swift */; };
 		B0A500000000000000000001 /* BrowserOmnibarPerformanceSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0A500000000000000000002 /* BrowserOmnibarPerformanceSupport.swift */; };
 		A5001405 /* PanelContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001415 /* PanelContentView.swift */; };
+		R3C0E0E0E0E0E0E0E0E000001 /* RemoteReconnectOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = R3C0E0E0E0E0E0E0E0E000002 /* RemoteReconnectOverlay.swift */; };
 		A5001406 /* Workspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001416 /* Workspace.swift */; };
 		D7AB3605C10DEF0000000003 /* WorkspaceCloseTabsBatching.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7AB3605C10DEF0000000004 /* WorkspaceCloseTabsBatching.swift */; };
 		C3744E010000000000000001 /* Workspace+PanelLifecycle.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3744E020000000000000001 /* Workspace+PanelLifecycle.swift */; };
@@ -857,6 +858,7 @@
 		B0A501000000000000000002 /* BrowserOmnibarAppKitBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/BrowserOmnibarAppKitBridge.swift; sourceTree = "<group>"; };
 		B0A500000000000000000002 /* BrowserOmnibarPerformanceSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/BrowserOmnibarPerformanceSupport.swift; sourceTree = "<group>"; };
 		A5001415 /* PanelContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/PanelContentView.swift; sourceTree = "<group>"; };
+		R3C0E0E0E0E0E0E0E0E000002 /* RemoteReconnectOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/RemoteReconnectOverlay.swift; sourceTree = "<group>"; };
 		A5001416 /* Workspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Workspace.swift; sourceTree = "<group>"; };
 		D7AB3605C10DEF0000000004 /* WorkspaceCloseTabsBatching.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceCloseTabsBatching.swift; sourceTree = "<group>"; };
 		C3744E020000000000000001 /* Workspace+PanelLifecycle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Workspace+PanelLifecycle.swift"; sourceTree = "<group>"; };
@@ -1475,6 +1477,7 @@ A7SSH0000000000000000002 /* CallbackTrampoline.swift */,
 				A5001510 /* CmuxWebView.swift */,
 				D7AB0000000000000000000A /* CmuxWebView+MoveTabToNewWorkspace.swift */,
 				A5001415 /* PanelContentView.swift */,
+				R3C0E0E0E0E0E0E0E0E000002 /* RemoteReconnectOverlay.swift */,
 				A5001211 /* UpdateController.swift */,
 				A5001212 /* UpdateDelegate.swift */,
 				A5001213 /* UpdateDriver.swift */,
@@ -2236,6 +2239,7 @@ A7SSH0000000000000000001 /* CallbackTrampoline.swift in Sources */,
 				A5001500 /* CmuxWebView.swift in Sources */,
 				D7AB00000000000000000009 /* CmuxWebView+MoveTabToNewWorkspace.swift in Sources */,
 				A5001405 /* PanelContentView.swift in Sources */,
+				R3C0E0E0E0E0E0E0E0E000001 /* RemoteReconnectOverlay.swift in Sources */,
 				A5001201 /* UpdateController.swift in Sources */,
 				A5001202 /* UpdateDelegate.swift in Sources */,
 				A5001203 /* UpdateDriver.swift in Sources */,

@@ -6329,9 +6329,49 @@ class TabManager: ObservableObject {
         cmuxDebugLog(
             "surface.close.childExited tab=\(tabId.uuidString.prefix(5)) " +
             "surface=\(surfaceId.uuidString.prefix(5)) panels=\(tab.panels.count) workspaces=\(tabs.count) " +
-            "remoteWorkspace=\(tab.isRemoteWorkspace ? 1 : 0) keepRemote=\(keepsRemoteWorkspaceOpen ? 1 : 0)"
+            "remoteWorkspace=\(tab.isRemoteWorkspace ? 1 : 0) keepRemote=\(keepsRemoteWorkspaceOpen ? 1 : 0) " +
+            "remoteState=\(String(describing: tab.remoteConnectionState))"
         )
 #endif
+
+        // Suppress the close when the remote workspace is mid-reconnect:
+        // libghostty fires child_exited the instant the daemon's mux session
+        // ends (which happens on every SSH drop, not just on real shell exit),
+        // and tearing the panel down would lose the user's pane layout +
+        // require them to manually re-open every terminal once the link
+        // comes back. The `RemoteReconnectOverlay` keeps the user informed
+        // while attemptReconnect drives the underlying reconnection. The
+        // surface inside the panel is dead at this point — the user will see
+        // frozen content under the overlay — but the panel itself stays so
+        // the workspace shape is preserved.
+        if tab.isRemoteWorkspace {
+            switch tab.remoteConnectionState {
+            case .reconnecting, .connecting:
+#if DEBUG
+                cmuxDebugLog(
+                    "surface.close.childExited.suppress tab=\(tabId.uuidString.prefix(5)) " +
+                    "surface=\(surfaceId.uuidString.prefix(5)) reason=remote_reconnecting"
+                )
+#endif
+                return
+            case .connected, .error, .disconnected:
+                // libghostty delivers a final child_exited for the
+                // old daemon session after `.reconnecting → .connected`
+                // (the dead channel's EOF). Treat any child_exited
+                // landing within the grace window as that stale event,
+                // not a real shell exit.
+                if let until = tab.remoteReconnectGraceUntil, until > Date() {
+#if DEBUG
+                    cmuxDebugLog(
+                        "surface.close.childExited.suppress tab=\(tabId.uuidString.prefix(5)) " +
+                        "surface=\(surfaceId.uuidString.prefix(5)) reason=remote_reconnect_grace " +
+                        "until=\(until.timeIntervalSinceNow)s"
+                    )
+#endif
+                    return
+                }
+            }
+        }
 
         // Exiting the last SSH surface should demote the workspace back to a local one.
         // Route through Workspace close handling so remote teardown and replacement-panel
