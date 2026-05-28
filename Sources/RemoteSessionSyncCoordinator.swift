@@ -17,8 +17,17 @@ protocol RemoteSessionSyncCoordinatorDelegate: AnyObject {
     )
 }
 
-/// Polls `listSessions()` every 8 seconds while connected and notifies its delegate of
-/// discovered, ended, and changed sessions. One instance per `WorkspaceSSHIntegration`.
+/// Diffs the daemon's session list against a last-known snapshot and
+/// notifies its delegate of additions / removals / metadata changes.
+///
+/// Used to be a continuous 8s poll. Now strictly on-demand: callers
+/// invoke `refreshNow()` when the SSH connection just (re)connected
+/// and when the command palette opens. That covers the two real
+/// reasons we'd want to learn about externally-initiated session
+/// changes (another cmux instance, daemon-side eviction) without
+/// burning a SSH round-trip every 8 seconds in single-user setups.
+///
+/// One instance per `WorkspaceSSHIntegration`.
 @MainActor
 final class RemoteSessionSyncCoordinator {
     private let connection: Ghostty.SSHConnection
@@ -26,12 +35,13 @@ final class RemoteSessionSyncCoordinator {
 
     // groupID → last-seen entry for diff computation
     private var knownSessions: [UUID: Ghostty.SessionListEntry] = [:]
-    private var pollTask: Task<Void, Never>?
+    private var refreshTask: Task<Void, Never>?
 
     init(connection: Ghostty.SSHConnection, knownGroupIDs: Set<UUID> = []) {
         self.connection = connection
-        // Pre-populate knownSessions with stub entries so existing workspaces
-        // don't trigger "new session" callbacks on reconnect.
+        // Pre-populate knownSessions with stub entries so existing
+        // workspaces don't trigger "new session" callbacks on the
+        // first post-connect refresh.
         for id in knownGroupIDs {
             knownSessions[id] = Ghostty.SessionListEntry(
                 groupID: id,
@@ -42,19 +52,22 @@ final class RemoteSessionSyncCoordinator {
         }
     }
 
-    func start() {
-        guard pollTask == nil else { return }
-        pollTask = Task { [weak self] in
-            while !Task.isCancelled {
-                await self?.pollOnce()
-                try? await Task.sleep(for: .seconds(8))
-            }
+    /// Trigger a one-shot list-sessions + diff. Coalesces concurrent
+    /// callers — if a refresh is already in flight, the second caller
+    /// piggybacks on it instead of issuing a duplicate SSH request.
+    func refreshNow() {
+        if refreshTask != nil { return }
+        refreshTask = Task { [weak self] in
+            await self?.pollOnce()
+            self?.refreshTask = nil
         }
     }
 
+    /// Cancel any in-flight refresh. Called from teardown paths so we
+    /// don't fire delegate callbacks against a dead workspace.
     func stop() {
-        pollTask?.cancel()
-        pollTask = nil
+        refreshTask?.cancel()
+        refreshTask = nil
     }
 
     /// Notify the coordinator that a local workspace was closed so it won't fire

@@ -39,8 +39,23 @@ final class WorkspaceSSHIntegration {
             for await state in conn.state {
                 guard let self else { return }
                 self.connectionState = state
+                // Each (re)connect is the right moment to pull a fresh
+                // session list — another cmux instance may have added
+                // or killed sessions while we were down. Replaces the
+                // old continuous-poll loop in
+                // `RemoteSessionSyncCoordinator`.
+                if case .connected = state {
+                    self._discoveryCoordinator?.refreshNow()
+                }
             }
         }
+    }
+
+    /// Force a one-shot remote-session diff. Called from the command
+    /// palette open path so the user sees an up-to-date list without
+    /// us running a background poll in the meantime.
+    func refreshRemoteSessions() {
+        _discoveryCoordinator?.refreshNow()
     }
 
     func tearDown() {
@@ -71,11 +86,15 @@ final class WorkspaceSSHIntegration {
 
     // MARK: - Discovery coordinator (Track E)
 
-    /// Installs (or replaces) the session discovery coordinator and starts polling.
+    /// Installs (or replaces) the session discovery coordinator and
+    /// fires one immediate refresh so callers see the current session
+    /// list right away. Subsequent refreshes are on-demand via
+    /// `refreshRemoteSessions()` (palette open) or auto-triggered on
+    /// the next `.connected` state transition.
     func attachDiscoveryCoordinator(_ coord: AnyObject) {
         _discoveryCoordinator?.stop()
         _discoveryCoordinator = coord as? RemoteSessionSyncCoordinator
-        _discoveryCoordinator?.start()
+        _discoveryCoordinator?.refreshNow()
     }
 
     // MARK: - Session management (Track E)

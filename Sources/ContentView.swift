@@ -1271,6 +1271,10 @@ struct ContentView: View {
         let destination: String
         let groupID: UUID
         let surfaceCount: UInt32
+        /// True when the daemon reports the session as currently
+        /// attached (`SessionListStatus.attached`). Drives the palette
+        /// to dispatch a focus action instead of a reattach.
+        let isAttached: Bool
     }
 
     static func tmuxWorkspacePaneExactRect(
@@ -5046,6 +5050,14 @@ struct ContentView: View {
             }
         }
         guard !integrations.isEmpty else { return }
+        // Kick a session-list diff per integration. The continuous 8s
+        // poll in `RemoteSessionSyncCoordinator` is gone; the palette
+        // is now one of the two on-demand refresh triggers (the other
+        // is `.connected` state transitions inside
+        // `WorkspaceSSHIntegration`).
+        for (_, ssh) in integrations {
+            ssh.refreshRemoteSessions()
+        }
         commandPaletteRemoteSessionLoadTask = Task { @MainActor in
             var entries: [RemoteSessionPaletteEntry] = []
             await withTaskGroup(of: [RemoteSessionPaletteEntry].self) { group in
@@ -5054,13 +5066,22 @@ struct ContentView: View {
                     group.addTask {
                         let sessions = await ssh.listSessionsForPalette()
                         return sessions.compactMap { session -> RemoteSessionPaletteEntry? in
-                            guard session.surfaceCount == 0 else { return nil }
+                            // Skip dead sessions — they can't be focused or
+                            // reattached. Attached + detached both surface;
+                            // the entry's isAttached drives whether the
+                            // palette command focuses an existing workspace
+                            // or asks for a fresh attach.
+                            switch session.status {
+                            case .dead: return nil
+                            case .attached, .detached: break
+                            }
                             return RemoteSessionPaletteEntry(
                                 id: session.groupID,
                                 label: session.label.isEmpty ? dest : session.label,
                                 destination: dest,
                                 groupID: session.groupID,
-                                surfaceCount: session.surfaceCount
+                                surfaceCount: session.surfaceCount,
+                                isAttached: session.status == .attached
                             )
                         }
                     }
@@ -6177,13 +6198,25 @@ struct ContentView: View {
         for entry in commandPaletteRemoteSessionEntries {
             let entryGroupID = entry.groupID
             let entryDestination = entry.destination
+            // Attached sessions get a "Focus:" verb (the workspace is
+            // already mounted somewhere in this cmux), detached ones
+            // get "Reattach:" (will be opened in a new workspace).
+            // Both go through `reattachOrFocusRemoteSession` which
+            // already picks the right code path based on whether a
+            // workspace with that groupID exists.
+            let titlePrefix = entry.isAttached
+                ? String(localized: "commandPalette.remoteSession.focus", defaultValue: "Focus")
+                : String(localized: "commandPalette.remoteSession.reattach", defaultValue: "Reattach")
+            let subtitleSuffix = entry.isAttached
+                ? String(localized: "commandPalette.remoteSession.attached", defaultValue: "attached")
+                : String(localized: "commandPalette.remoteSession.detached", defaultValue: "detached")
             let commandId = "remote.reattach.\(entry.id.uuidString.lowercased())"
             commands.append(
                 CommandPaletteCommand(
                     id: commandId,
                     rank: nextRank,
-                    title: "Reattach: \(entry.label)",
-                    subtitle: "Remote session on \(entryDestination)",
+                    title: "\(titlePrefix): \(entry.label)",
+                    subtitle: "Remote session on \(entryDestination) · \(subtitleSuffix)",
                     shortcutHint: nil,
                     kindLabel: String(localized: "commandPalette.kind.remoteSession", defaultValue: "Remote Session"),
                     keywords: ["reattach", "remote", "session", "ssh", entry.label, entryDestination],
@@ -12387,6 +12420,13 @@ struct SidebarWorkspaceSnapshotBuilder {
         let customDescription: String?
         let isPinned: Bool
         let customColorHex: String?
+        /// Hex string for the ghostty-daemon-side session color
+        /// (`SessionListEntry.color`, slot 0–7) — non-nil for remote
+        /// workspaces whose daemon session has been assigned a slot.
+        /// Rendered as a small dot alongside the title so attached /
+        /// detached sessions a coworker started elsewhere are
+        /// recognizable at a glance.
+        let remoteSessionColorHex: String?
         let remoteWorkspaceSidebarText: String?
         let remoteConnectionStatusText: String
         let remoteStateHelpText: String
@@ -12772,6 +12812,21 @@ private struct TabItemView: View, Equatable {
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundColor(activeSecondaryColor(0.8))
                         .safeHelp(protectedWorkspaceTooltip)
+                }
+
+                // Daemon-assigned remote-session color (slot 0–7,
+                // mapped via WorkspaceTabColorSettings.sessionColorHex).
+                // Distinct from the user's tab `customColor` — this
+                // reflects what the *other* attached cmux instance /
+                // ghostty session picked, so a coworker's session is
+                // visually identifiable in the sidebar without me
+                // having to choose a color locally.
+                if let hex = workspaceSnapshot.remoteSessionColorHex,
+                   let color = Color(hex: hex) {
+                    Circle()
+                        .fill(color)
+                        .frame(width: 6, height: 6)
+                        .accessibilityHidden(true)
                 }
 
                 Text(workspaceSnapshot.title)
@@ -13318,6 +13373,36 @@ private struct TabItemView: View, Equatable {
                 }
             }
             .disabled(allRemoteContextMenuTargetsDisconnected)
+
+            // Remote session management. Posts the same notifications
+            // that libghostty's `ssh_rename_session` /
+            // `ssh_delete_session` actions post — `SSHActionObserver`
+            // owns the confirm-alert flow so the surface chrome and
+            // the in-terminal keybinding stay in sync (shared-behavior
+            // policy in CLAUDE.md).
+            if !isMulti, let targetId = targetIds.first {
+                Button(String(
+                    localized: "contextMenu.renameRemoteSession",
+                    defaultValue: "Rename Remote Session…"
+                )) {
+                    NotificationCenter.default.post(
+                        name: SSHActionNotification.renameSession,
+                        object: nil,
+                        userInfo: [SSHActionNotification.workspaceIDKey: targetId]
+                    )
+                }
+
+                Button(String(
+                    localized: "contextMenu.killRemoteSession",
+                    defaultValue: "Kill Remote Session…"
+                )) {
+                    NotificationCenter.default.post(
+                        name: SSHActionNotification.deleteSession,
+                        object: nil,
+                        userInfo: [SSHActionNotification.workspaceIDKey: targetId]
+                    )
+                }
+            }
         }
 
         Menu(String(localized: "contextMenu.workspaceSettings", defaultValue: "Workspace Settings")) {
@@ -13754,6 +13839,9 @@ private struct TabItemView: View, Equatable {
             customDescription: settings.showsWorkspaceDescription ? sidebarVisibleCustomDescription : nil,
             isPinned: tab.isPinned,
             customColorHex: tab.customColor,
+            remoteSessionColorHex: tab.remoteConfiguration.flatMap {
+                WorkspaceTabColorSettings.sessionColorHex(forSlot: $0.sessionColor)
+            },
             remoteWorkspaceSidebarText: remoteWorkspaceSidebarText,
             remoteConnectionStatusText: remoteConnectionStatusText,
             remoteStateHelpText: remoteStateHelpText,
