@@ -12420,6 +12420,13 @@ struct SidebarWorkspaceSnapshotBuilder {
         let customDescription: String?
         let isPinned: Bool
         let customColorHex: String?
+        /// Hex string for the ghostty-daemon-side session color
+        /// (`SessionListEntry.color`, slot 0–7) — non-nil for remote
+        /// workspaces whose daemon session has been assigned a slot.
+        /// Rendered as a small dot alongside the title so attached /
+        /// detached sessions a coworker started elsewhere are
+        /// recognizable at a glance.
+        let remoteSessionColorHex: String?
         let remoteWorkspaceSidebarText: String?
         let remoteConnectionStatusText: String
         let remoteStateHelpText: String
@@ -12805,6 +12812,21 @@ private struct TabItemView: View, Equatable {
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundColor(activeSecondaryColor(0.8))
                         .safeHelp(protectedWorkspaceTooltip)
+                }
+
+                // Daemon-assigned remote-session color (slot 0–7,
+                // mapped via WorkspaceTabColorSettings.sessionColorHex).
+                // Distinct from the user's tab `customColor` — this
+                // reflects what the *other* attached cmux instance /
+                // ghostty session picked, so a coworker's session is
+                // visually identifiable in the sidebar without me
+                // having to choose a color locally.
+                if let hex = workspaceSnapshot.remoteSessionColorHex,
+                   let color = Color(hex: hex) {
+                    Circle()
+                        .fill(color)
+                        .frame(width: 6, height: 6)
+                        .accessibilityHidden(true)
                 }
 
                 Text(workspaceSnapshot.title)
@@ -13817,6 +13839,9 @@ private struct TabItemView: View, Equatable {
             customDescription: settings.showsWorkspaceDescription ? sidebarVisibleCustomDescription : nil,
             isPinned: tab.isPinned,
             customColorHex: tab.customColor,
+            remoteSessionColorHex: tab.remoteConfiguration.flatMap {
+                WorkspaceTabColorSettings.sessionColorHex(forSlot: $0.sessionColor)
+            },
             remoteWorkspaceSidebarText: remoteWorkspaceSidebarText,
             remoteConnectionStatusText: remoteConnectionStatusText,
             remoteStateHelpText: remoteStateHelpText,

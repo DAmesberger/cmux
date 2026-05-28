@@ -453,6 +453,22 @@ enum WorkspaceTabColorSettings {
         originalPRPalette
     }
 
+    /// Map a ghostty-daemon session-color slot (0–7, -1 = unset) to a
+    /// hex string from the built-in tab palette. The daemon's slots
+    /// are abstract integers; this function is the single source of
+    /// truth for how cmux renders them. Returns nil for `slot < 0`.
+    ///
+    /// Slot → palette name mapping kept deliberately close to the
+    /// ANSI 8-color order (red, green, yellow, blue, magenta, cyan,
+    /// white-ish, grey) so cross-referencing with the daemon's own
+    /// CLI session-color picker is intuitive.
+    static func sessionColorHex(forSlot slot: Int8) -> String? {
+        guard slot >= 0 else { return nil }
+        let names = ["Red", "Green", "Amber", "Blue", "Magenta", "Aqua", "Teal", "Charcoal"]
+        let idx = Int(slot) % names.count
+        return defaultColorHex(named: names[idx])
+    }
+
     static func palette(defaults: UserDefaults = .standard) -> [WorkspaceTabColorEntry] {
         let paletteMap = effectivePaletteMap(defaults: defaults)
         let builtInOrder = defaultPalette.compactMap { entry -> WorkspaceTabColorEntry? in
