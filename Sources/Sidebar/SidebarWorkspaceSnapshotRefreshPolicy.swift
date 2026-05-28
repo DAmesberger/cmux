@@ -23,6 +23,7 @@ extension SidebarWorkspaceSnapshotBuilder.Snapshot {
             customDescription: snapshot.customDescription,
             isPinned: snapshot.isPinned,
             customColorHex: snapshot.customColorHex,
+            remoteSessionColorHex: snapshot.remoteSessionColorHex,
             remoteWorkspaceSidebarText: remoteWorkspaceSidebarText,
             remoteConnectionStatusText: remoteConnectionStatusText,
             remoteStateHelpText: remoteStateHelpText,
