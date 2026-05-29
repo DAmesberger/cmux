@@ -711,29 +711,39 @@ fi
 # The bundled name encodes the normalized target so future builds
 # could ship binaries for multiple platforms in the same bundle.
 if [[ -d "$PWD/ghostty" && "${CMUX_SKIP_DAEMON_BUILD:-}" != "1" ]]; then
-  DAEMON_TARGET="${CMUX_DAEMON_TARGET:-x86_64-linux-gnu}"
-  (cd "$PWD/ghostty" && zig build \
-      -Demit-daemon=true \
-      "-Dtarget=$DAEMON_TARGET" \
-      -Dapp-runtime=none \
-      -Doptimize=ReleaseFast) 2>&1 | tail -5
-  DAEMON_BIN="$PWD/ghostty/zig-out/bin/ghostty-daemon"
-  if [[ -x "$DAEMON_BIN" ]]; then
-    case "$DAEMON_TARGET" in
-      x86_64-linux*)   BUNDLE_NAME="ghostty-daemon-linux-x86_64" ;;
-      aarch64-linux*)  BUNDLE_NAME="ghostty-daemon-linux-aarch64" ;;
-      x86_64-macos*)   BUNDLE_NAME="ghostty-daemon-macos-x86_64" ;;
-      aarch64-macos*)  BUNDLE_NAME="ghostty-daemon-macos-aarch64" ;;
-      *)               BUNDLE_NAME="ghostty-daemon" ;;
-    esac
-    RES_DIR="$APP_PATH/Contents/Resources"
-    mkdir -p "$RES_DIR"
-    cp "$DAEMON_BIN" "$RES_DIR/$BUNDLE_NAME"
-    chmod +x "$RES_DIR/$BUNDLE_NAME"
-    echo "ghostty-daemon ($DAEMON_TARGET) bundled: $RES_DIR/$BUNDLE_NAME"
+  # The remote can be linux OR macos, x86_64 OR aarch64, so by default build
+  # + bundle the daemon (which now also carries the `+cmux-notify` reverse-
+  # notify client) for all four. Override CMUX_DAEMON_TARGETS (space-separated)
+  # or CMUX_DAEMON_TARGET (single, legacy) to narrow for faster local iteration.
+  if [[ -n "${CMUX_DAEMON_TARGET:-}" ]]; then
+    DAEMON_TARGETS="$CMUX_DAEMON_TARGET"
   else
-    echo "warning: ghostty-daemon cross-build produced no binary at $DAEMON_BIN" >&2
+    DAEMON_TARGETS="${CMUX_DAEMON_TARGETS:-x86_64-linux-gnu aarch64-linux-gnu x86_64-macos aarch64-macos}"
   fi
+  RES_DIR="$APP_PATH/Contents/Resources"
+  mkdir -p "$RES_DIR"
+  for DAEMON_TARGET in $DAEMON_TARGETS; do
+    (cd "$PWD/ghostty" && zig build \
+        -Demit-daemon=true \
+        "-Dtarget=$DAEMON_TARGET" \
+        -Dapp-runtime=none \
+        -Doptimize=ReleaseFast) 2>&1 | tail -5
+    DAEMON_BIN="$PWD/ghostty/zig-out/bin/ghostty-daemon"
+    if [[ -x "$DAEMON_BIN" ]]; then
+      case "$DAEMON_TARGET" in
+        x86_64-linux*)   BUNDLE_NAME="ghostty-daemon-linux-x86_64" ;;
+        aarch64-linux*)  BUNDLE_NAME="ghostty-daemon-linux-aarch64" ;;
+        x86_64-macos*)   BUNDLE_NAME="ghostty-daemon-macos-x86_64" ;;
+        aarch64-macos*)  BUNDLE_NAME="ghostty-daemon-macos-aarch64" ;;
+        *)               BUNDLE_NAME="ghostty-daemon" ;;
+      esac
+      cp "$DAEMON_BIN" "$RES_DIR/$BUNDLE_NAME"
+      chmod +x "$RES_DIR/$BUNDLE_NAME"
+      echo "ghostty-daemon ($DAEMON_TARGET) bundled: $RES_DIR/$BUNDLE_NAME"
+    else
+      echo "warning: ghostty-daemon cross-build produced no binary at $DAEMON_BIN ($DAEMON_TARGET)" >&2
+    fi
+  done
 fi
 # Drop any stale marker file from earlier reload.sh versions.
 rm -f /tmp/cmux-last-ghostty-daemon-path 2>/dev/null || true
