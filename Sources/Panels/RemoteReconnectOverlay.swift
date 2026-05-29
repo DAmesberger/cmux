@@ -1,22 +1,18 @@
 import SwiftUI
 
 /// Overlay rendered on top of a remote workspace's terminal / browser
-/// panel content while the SSH connection is in flight after a drop.
-/// The panel content stays mounted so reattachment can restore it
-/// without recreating the surface; the overlay communicates "we are
-/// working on it" so a network blip doesn't manifest as a silent
-/// panel vanish or a hung-looking browser.
+/// panel content while the SSH connection is in flight after a drop, or
+/// while a best-effort capability (e.g. the browser proxy) is degraded.
+///
+/// This view is a DUMB renderer: it paints a fully-resolved
+/// `RemoteOverlayPresentation` verbatim and has no knowledge of
+/// `WorkspaceRemoteConnectionState`. All of the "what should we show"
+/// decisions live in `RemoteOverlayPolicy`. The panel content stays
+/// mounted so reattachment can restore it without recreating the surface;
+/// the overlay communicates "we are working on it" so a network blip
+/// doesn't manifest as a silent panel vanish or a hung-looking browser.
 struct RemoteReconnectOverlay: View {
-    let state: WorkspaceRemoteConnectionState
-    let target: String?
-    let detail: String?
-    /// When non-nil the overlay swaps its headline to "Uploading
-    /// runtime…" and renders a determinate progress bar.
-    let provisioning: WorkspaceRemoteProvisioning?
-    /// When non-nil the overlay shows elapsed time since the drop +
-    /// attempt counter so the user can tell how long they've been
-    /// disconnected.
-    let reconnect: WorkspaceRemoteReconnectInfo?
+    let presentation: RemoteOverlayPresentation
 
     /// Tick once per second so the elapsed/countdown text re-renders
     /// without us holding a timer per overlay instance.
@@ -24,6 +20,20 @@ struct RemoteReconnectOverlay: View {
     private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
+        Group {
+            switch presentation.severity {
+            case .blockingDim:
+                blockingDim
+            case .banner:
+                banner
+            }
+        }
+        .onReceive(tick) { now = $0 }
+    }
+
+    // MARK: - Blocking dim (whole-workspace transport / provisioning)
+
+    private var blockingDim: some View {
         ZStack {
             // Fully opaque dim — the terminal/web view underneath
             // becomes a faint ghost. The user can tell at a glance
@@ -32,19 +42,9 @@ struct RemoteReconnectOverlay: View {
                 .allowsHitTesting(false)
 
             VStack(spacing: 16) {
-                if isUploading {
-                    ProgressView(value: provisioning?.progress ?? 0)
-                        .progressViewStyle(.linear)
-                        .tint(.white)
-                        .frame(width: 280)
-                } else if showsSpinner {
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                        .controlSize(.large)
-                        .tint(.white)
-                }
+                statusGlyph
 
-                Text(headlineText)
+                Text(presentation.headline)
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(.white)
 
@@ -75,55 +75,102 @@ struct RemoteReconnectOverlay: View {
                     .shadow(color: Color.black.opacity(0.65), radius: 22, x: 0, y: 8)
             )
         }
-        .onReceive(tick) { now = $0 }
     }
 
-    private var isUploading: Bool { provisioning != nil }
+    // MARK: - Banner (non-blocking capability strip)
+
+    private var banner: some View {
+        VStack {
+            HStack(spacing: 10) {
+                if presentation.isError {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12, weight: .regular))
+                        .foregroundStyle(.white.opacity(0.9))
+                } else if showsSpinner {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .controlSize(.small)
+                        .tint(.white)
+                }
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(presentation.headline)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                    if let detail = presentation.detail, !detail.isEmpty {
+                        Text(detail)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.white.opacity(0.82))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color(red: 0.10, green: 0.10, blue: 0.12).opacity(0.95))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(Color.white.opacity(0.22), lineWidth: 1)
+                    )
+                    .shadow(color: Color.black.opacity(0.4), radius: 10, x: 0, y: 4)
+            )
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
+
+            Spacer(minLength: 0)
+        }
+        .allowsHitTesting(false)
+    }
+
+    // MARK: - Shared rendering helpers (no state derivation)
+
+    /// The leading glyph for the blocking dim card. Determinate upload bar
+    /// when provisioning; circular spinner while a (re)connect is in
+    /// flight and there's no error; static warning glyph on a terminal
+    /// failure (no retry in flight — the user must act).
+    @ViewBuilder
+    private var statusGlyph: some View {
+        if isUploading {
+            ProgressView(value: presentation.provisioning?.progress ?? 0)
+                .progressViewStyle(.linear)
+                .tint(.white)
+                .frame(width: 280)
+        } else if showsSpinner {
+            ProgressView()
+                .progressViewStyle(.circular)
+                .controlSize(.large)
+                .tint(.white)
+        } else if presentation.isError {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 30, weight: .regular))
+                .foregroundStyle(.white.opacity(0.9))
+        }
+    }
+
+    private var isUploading: Bool { presentation.provisioning != nil }
 
     private var showsSpinner: Bool {
-        switch state {
-        case .connecting, .reconnecting, .error, .disconnected: return true
-        case .connected: return false
-        }
+        presentation.showsSpinner && !presentation.isError && presentation.provisioning == nil
     }
 
-    private var headlineText: String {
-        if isUploading {
-            return String(
-                localized: "remote.overlay.uploading",
-                defaultValue: "Uploading runtime…"
-            )
-        }
-        // Per product direction: never display a terminal "Disconnected" /
-        // "Connection lost" headline. The SSH integration is configured for
-        // relentless reconnect, so the user-visible story is always either
-        // "we are establishing the link" (initial connect) or "we are
-        // retrying after a drop." `.error` and `.disconnected` are folded
-        // into the reconnect branch.
-        switch state {
-        case .connecting:
-            return String(
-                localized: "remote.overlay.connecting",
-                defaultValue: "Connecting…"
-            )
-        case .reconnecting, .error, .disconnected:
-            return String(
-                localized: "remote.overlay.reconnecting",
-                defaultValue: "Reconnecting…"
-            )
-        case .connected:
-            return ""
-        }
-    }
-
-    /// "Disconnected for 12 s" — a single running clock. The attempt
-    /// counter was removed because libghostty's reconnect loop cycles
-    /// the number on every retry and that produces visual noise
-    /// without communicating anything actionable to the user.
+    /// "Disconnected for 12 s" — a single running clock. Only shown while a
+    /// reconnect is in flight (no running clock on a terminal error —
+    /// nothing is being retried).
     private var elapsedText: String? {
-        guard let r = reconnect else { return nil }
+        guard !presentation.isError, let r = presentation.reconnect else { return nil }
         let elapsedSec = max(0, Int(now.timeIntervalSince(r.startedAt)))
-        return "Disconnected for \(formatDuration(elapsedSec))"
+        return String(
+            format: String(
+                localized: "remote.overlay.disconnectedFor",
+                defaultValue: "Disconnected for %@"
+            ),
+            locale: .current, formatDuration(elapsedSec)
+        )
     }
 
     private func formatDuration(_ seconds: Int) -> String {
@@ -137,7 +184,7 @@ struct RemoteReconnectOverlay: View {
     }
 
     private var secondaryText: String? {
-        if let p = provisioning {
+        if let p = presentation.provisioning {
             let sent = ByteCountFormatter.string(fromByteCount: Int64(p.bytesSent), countStyle: .binary)
             let total = ByteCountFormatter.string(fromByteCount: Int64(p.totalBytes), countStyle: .binary)
             let pct = Int((p.progress * 100).rounded())
@@ -147,13 +194,9 @@ struct RemoteReconnectOverlay: View {
             case .localSelf:   sourceLabel = "ghostty"
             case .github:      sourceLabel = "release"
             }
-            if let target, !target.isEmpty {
-                return "\(target) — \(sent) / \(total) (\(pct)%) · \(sourceLabel)"
-            }
             return "\(sent) / \(total) (\(pct)%) · \(sourceLabel)"
         }
-        if let detail, !detail.isEmpty { return detail }
-        if let target, !target.isEmpty { return target }
+        if let detail = presentation.detail, !detail.isEmpty { return detail }
         return nil
     }
 }

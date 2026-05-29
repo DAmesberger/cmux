@@ -86,9 +86,15 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         keyEvent.unshifted_codepoint = key.unicodeScalars.first.map { UInt32($0.value) } ?? 0
         keyEvent.composing = false
 
+        // `ghostty_config_key_is_binding` was removed; binding resolution
+        // moved to the app/surface level. `config` here is
+        // `GhosttyApp.shared.config`, so the app-level query against the
+        // same shared app is semantically equivalent.
+        _ = config
         return key.withCString { ptr in
             keyEvent.text = ptr
-            return ghostty_config_key_is_binding(config, keyEvent)
+            guard let app = GhosttyApp.shared.app else { return false }
+            return ghostty_app_key_is_binding(app, keyEvent)
         }
     }
 

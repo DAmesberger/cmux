@@ -122,8 +122,9 @@ def _wait_remote_ready(client: cmux, workspace_id: str, timeout: float = 45.0) -
     while time.time() < deadline:
         last_status = client._call("workspace.remote.status", {"workspace_id": workspace_id}) or {}
         remote = last_status.get("remote") or {}
-        daemon = remote.get("daemon") or {}
-        if str(remote.get("state") or "") == "connected" and str(daemon.get("state") or "") == "ready":
+        proxy = remote.get("proxy") or {}
+        # `daemon` block folded into the transport `state` + derived `proxy`.
+        if str(remote.get("state") or "") == "connected" and str(proxy.get("state") or "") == "ready":
             return
         time.sleep(0.25)
     raise cmuxError(f"Remote did not become ready for {workspace_id}: {last_status}")

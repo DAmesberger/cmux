@@ -971,9 +971,7 @@ private final class SelectedWorkspaceDirectoryObserver: ObservableObject {
         let workspaceId: UUID?
         let currentDirectory: String?
         let remoteConfiguration: WorkspaceRemoteConfiguration?
-        let remoteConnectionState: WorkspaceRemoteConnectionState?
-        let remoteConnectionDetail: String?
-        let remoteDaemonStatus: WorkspaceRemoteDaemonStatus?
+        let remoteHealth: RemoteHealth?
     }
 
     @Published private(set) var directoryChangeGeneration: UInt64 = 0
@@ -996,9 +994,7 @@ private final class SelectedWorkspaceDirectoryObserver: ObservableObject {
                             workspaceId: nil,
                             currentDirectory: nil,
                             remoteConfiguration: nil,
-                            remoteConnectionState: nil,
-                            remoteConnectionDetail: nil,
-                            remoteDaemonStatus: nil
+                            remoteHealth: nil
                         )
                     )
                     .eraseToAnyPublisher()
@@ -1006,24 +1002,19 @@ private final class SelectedWorkspaceDirectoryObserver: ObservableObject {
                 return workspace.$currentDirectory
                     .combineLatest(
                         workspace.$remoteConfiguration,
-                        workspace.$remoteConnectionState,
-                        workspace.$remoteConnectionDetail
+                        workspace.$remoteHealth
                     )
-                    .combineLatest(workspace.$remoteDaemonStatus)
-                    .map { values, remoteDaemonStatus in
+                    .map { values in
                         let (
                             currentDirectory,
                             remoteConfiguration,
-                            remoteConnectionState,
-                            remoteConnectionDetail
+                            remoteHealth
                         ) = values
                         return Snapshot(
                             workspaceId: workspace.id,
                             currentDirectory: currentDirectory,
                             remoteConfiguration: remoteConfiguration,
-                            remoteConnectionState: remoteConnectionState,
-                            remoteConnectionDetail: remoteConnectionDetail,
-                            remoteDaemonStatus: remoteDaemonStatus
+                            remoteHealth: remoteHealth
                         )
                     }
                     .eraseToAnyPublisher()
@@ -2497,7 +2488,7 @@ struct ContentView: View {
                 fileExplorerStore.applyWorkspaceRoot(.none)
                 return
             }
-            let unavailableDetail = tab.remoteConnectionDetail ?? tab.remoteDaemonStatus.detail
+            let unavailableDetail = tab.remoteConnectionDetail
 
             #if DEBUG
             let hasUnavailableDetail = unavailableDetail?.isEmpty == false

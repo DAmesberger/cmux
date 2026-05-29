@@ -3,17 +3,14 @@ import Combine
 import AppKit
 import Bonsplit
 
-/// Snapshot of a remote workspace's SSH state, narrow enough that
-/// equality is cheap and the AppKit-side hosting view can decide
-/// whether anything actually changed. Equatable so a workspace that
-/// pushes the same payload on every state tick doesn't trigger a
-/// re-mount of the hosted SwiftUI overlay.
+/// The fully-resolved overlay presentation for a remote workspace's
+/// terminal panel, computed once by `RemoteOverlayPolicy`. Equatable so a
+/// workspace that pushes the same presentation on every state tick doesn't
+/// trigger a re-mount of the hosted SwiftUI overlay. The AppKit-side
+/// hosting view renders this verbatim — no state-to-string decisions live
+/// below this boundary.
 struct TerminalPanelRemoteOverlay: Equatable {
-    var state: WorkspaceRemoteConnectionState
-    var target: String?
-    var detail: String?
-    var provisioning: WorkspaceRemoteProvisioning?
-    var reconnect: WorkspaceRemoteReconnectInfo?
+    var presentation: RemoteOverlayPresentation
 }
 
 /// TerminalPanel wraps an existing TerminalSurface and conforms to the Panel protocol.

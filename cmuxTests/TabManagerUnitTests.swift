@@ -184,13 +184,7 @@ final class TabManagerChildExitCloseTests: XCTestCase {
                 destination: "cmux-macmini",
                 port: nil,
                 identityFile: nil,
-                sshOptions: [],
-                localProxyPort: nil,
-                relayPort: 64015,
-                relayID: String(repeating: "a", count: 16),
-                relayToken: String(repeating: "b", count: 64),
-                localSocketPath: "/tmp/cmux-debug-test.sock",
-                terminalStartupCommand: "ssh cmux-macmini"
+                sshOptions: []
             ),
             autoConnect: false
         )
@@ -225,13 +219,7 @@ final class TabManagerChildExitCloseTests: XCTestCase {
                 destination: "cmux-macmini",
                 port: nil,
                 identityFile: nil,
-                sshOptions: [],
-                localProxyPort: nil,
-                relayPort: 64016,
-                relayID: String(repeating: "a", count: 16),
-                relayToken: String(repeating: "b", count: 64),
-                localSocketPath: "/tmp/cmux-debug-test.sock",
-                terminalStartupCommand: "ssh cmux-macmini"
+                sshOptions: []
             ),
             autoConnect: false
         )
@@ -924,13 +912,7 @@ final class TabManagerPullRequestProbeTests: XCTestCase {
                 destination: "cmux-macmini",
                 port: nil,
                 identityFile: nil,
-                sshOptions: [],
-                localProxyPort: nil,
-                relayPort: 64017,
-                relayID: String(repeating: "a", count: 16),
-                relayToken: String(repeating: "b", count: 64),
-                localSocketPath: "/tmp/cmux-debug-test.sock",
-                terminalStartupCommand: "ssh cmux-macmini"
+                sshOptions: []
             ),
             autoConnect: false
         )

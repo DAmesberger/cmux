@@ -236,8 +236,12 @@ struct WorkspaceContentView: View {
                     isWorkspaceManuallyUnread: isWorkspaceManuallyUnread,
                     isWorkspaceManualUnreadRepresentative: workspaceManualUnreadPanelId == panel.id
                 )
-                let remoteState: WorkspaceRemoteConnectionState? = workspace.isRemoteWorkspace
-                    ? workspace.remoteConnectionState
+                let remoteOverlayPresentation: RemoteOverlayPresentation? = workspace.isRemoteWorkspace
+                    ? RemoteOverlayPolicy.presentation(
+                        for: workspace.remoteHealth,
+                        host: .browser,
+                        target: workspace.remoteConfiguration?.displayTarget
+                    )
                     : nil
                 PanelContentView(
                     panel: panel,
@@ -250,19 +254,7 @@ struct WorkspaceContentView: View {
                     isSplit: isSplit,
                     appearance: appearance,
                     hasUnreadNotification: showsNotificationRing && !usesWorkspacePaneOverlay,
-                    remoteConnectionState: remoteState,
-                    remoteConnectionTarget: workspace.isRemoteWorkspace
-                        ? workspace.remoteConfiguration?.displayTarget
-                        : nil,
-                    remoteConnectionDetail: workspace.isRemoteWorkspace
-                        ? workspace.remoteConnectionDetail
-                        : nil,
-                    remoteProvisioning: workspace.isRemoteWorkspace
-                        ? workspace.remoteProvisioning
-                        : nil,
-                    remoteReconnect: workspace.isRemoteWorkspace
-                        ? workspace.remoteReconnect
-                        : nil,
+                    remoteOverlayPresentation: remoteOverlayPresentation,
                     onFocus: {
                         // Keep bonsplit focus in sync with the AppKit first responder for the
                         // active workspace. This prevents divergence between the blue focused-tab

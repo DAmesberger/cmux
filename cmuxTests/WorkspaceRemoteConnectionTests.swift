@@ -112,76 +112,6 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
         return histfile ?? ""
     }
 
-    func testRemoteRelayMetadataCleanupScriptRemovesMatchingSocketAddr() {
-        let fileManager = FileManager.default
-        let home = fileManager.temporaryDirectory.appendingPathComponent("cmux-relay-cleanup-\(UUID().uuidString)")
-        let relayDir = home.appendingPathComponent(".cmux/relay")
-        let socketAddrURL = home.appendingPathComponent(".cmux/socket_addr")
-        let authURL = relayDir.appendingPathComponent("64008.auth")
-        let daemonPathURL = relayDir.appendingPathComponent("64008.daemon_path")
-        let ttyURL = relayDir.appendingPathComponent("64008.tty")
-
-        XCTAssertNoThrow(try fileManager.createDirectory(at: relayDir, withIntermediateDirectories: true))
-        XCTAssertNoThrow(try "127.0.0.1:64008".write(to: socketAddrURL, atomically: true, encoding: .utf8))
-        XCTAssertNoThrow(try "auth".write(to: authURL, atomically: true, encoding: .utf8))
-        XCTAssertNoThrow(try "daemon".write(to: daemonPathURL, atomically: true, encoding: .utf8))
-        XCTAssertNoThrow(try "ttys001".write(to: ttyURL, atomically: true, encoding: .utf8))
-        defer { try? fileManager.removeItem(at: home) }
-
-        let result = runProcess(
-            executablePath: "/usr/bin/env",
-            arguments: [
-                "HOME=\(home.path)",
-                "/bin/sh",
-                "-c",
-                WorkspaceRemoteSessionController.remoteRelayMetadataCleanupScript(relayPort: 64008),
-            ],
-            timeout: 5
-        )
-
-        XCTAssertFalse(result.timedOut, result.stderr)
-        XCTAssertEqual(result.status, 0, result.stderr)
-        XCTAssertFalse(fileManager.fileExists(atPath: socketAddrURL.path))
-        XCTAssertFalse(fileManager.fileExists(atPath: authURL.path))
-        XCTAssertFalse(fileManager.fileExists(atPath: daemonPathURL.path))
-        XCTAssertFalse(fileManager.fileExists(atPath: ttyURL.path))
-    }
-
-    func testRemoteRelayMetadataCleanupScriptPreservesDifferentSocketAddr() {
-        let fileManager = FileManager.default
-        let home = fileManager.temporaryDirectory.appendingPathComponent("cmux-relay-cleanup-preserve-\(UUID().uuidString)")
-        let relayDir = home.appendingPathComponent(".cmux/relay")
-        let socketAddrURL = home.appendingPathComponent(".cmux/socket_addr")
-        let authURL = relayDir.appendingPathComponent("64009.auth")
-        let daemonPathURL = relayDir.appendingPathComponent("64009.daemon_path")
-        let ttyURL = relayDir.appendingPathComponent("64009.tty")
-
-        XCTAssertNoThrow(try fileManager.createDirectory(at: relayDir, withIntermediateDirectories: true))
-        XCTAssertNoThrow(try "127.0.0.1:64010".write(to: socketAddrURL, atomically: true, encoding: .utf8))
-        XCTAssertNoThrow(try "auth".write(to: authURL, atomically: true, encoding: .utf8))
-        XCTAssertNoThrow(try "daemon".write(to: daemonPathURL, atomically: true, encoding: .utf8))
-        XCTAssertNoThrow(try "ttys002".write(to: ttyURL, atomically: true, encoding: .utf8))
-        defer { try? fileManager.removeItem(at: home) }
-
-        let result = runProcess(
-            executablePath: "/usr/bin/env",
-            arguments: [
-                "HOME=\(home.path)",
-                "/bin/sh",
-                "-c",
-                WorkspaceRemoteSessionController.remoteRelayMetadataCleanupScript(relayPort: 64009),
-            ],
-            timeout: 5
-        )
-
-        XCTAssertFalse(result.timedOut, result.stderr)
-        XCTAssertEqual(result.status, 0, result.stderr)
-        XCTAssertTrue(fileManager.fileExists(atPath: socketAddrURL.path))
-        XCTAssertFalse(fileManager.fileExists(atPath: authURL.path))
-        XCTAssertFalse(fileManager.fileExists(atPath: daemonPathURL.path))
-        XCTAssertFalse(fileManager.fileExists(atPath: ttyURL.path))
-    }
-
     func testRelayZshBootstrapUsesRealHomeHistoryByDefault() throws {
         let histfile = try runRelayZshHistfile { home in
             try ":\n".write(to: home.appendingPathComponent(".zshenv"), atomically: true, encoding: .utf8)
@@ -256,244 +186,6 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
         XCTAssertEqual(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines), "ja_JP.UTF-8||")
     }
 
-    func testDaemonSocketForwardArgumentsTargetBakedVMSocket() {
-        let configuration = WorkspaceRemoteConfiguration(
-            destination: "cmux-macmini",
-            port: 2222,
-            identityFile: "/Users/test/.ssh/id_ed25519",
-            sshOptions: [
-                "ControlPath /tmp/cmux-ssh-%C",
-                "StrictHostKeyChecking=accept-new",
-            ],
-            localProxyPort: nil,
-            relayPort: nil,
-            relayID: nil,
-            relayToken: nil,
-            localSocketPath: nil,
-            terminalStartupCommand: nil,
-            skipDaemonBootstrap: true
-        )
-
-        let arguments = WorkspaceRemoteSSHBatchCommandBuilder.daemonSocketForwardArguments(
-            configuration: configuration,
-            localPort: 64123,
-            remoteSocketPath: "/run/cmuxd-remote.sock"
-        )
-
-        XCTAssertEqual(Array(arguments.prefix(4)), ["-N", "-T", "-S", "none"])
-        XCTAssertTrue(arguments.contains("-p"))
-        XCTAssertTrue(arguments.contains("2222"))
-        XCTAssertTrue(arguments.contains("-i"))
-        XCTAssertTrue(arguments.contains("/Users/test/.ssh/id_ed25519"))
-        XCTAssertTrue(arguments.contains("127.0.0.1:64123:/run/cmuxd-remote.sock"))
-        XCTAssertEqual(arguments.last, "cmux-macmini")
-    }
-
-    func testProxyBrokerTransportKeySeparatesVMBakedSSHFromStandardSSH() {
-        let standard = WorkspaceRemoteConfiguration(
-            destination: "cmux-macmini",
-            port: 2222,
-            identityFile: "/Users/test/.ssh/id_ed25519",
-            sshOptions: ["ControlPath /tmp/cmux-ssh-%C"],
-            localProxyPort: nil,
-            relayPort: 64099,
-            relayID: "relay-a",
-            relayToken: String(repeating: "a", count: 64),
-            localSocketPath: "/tmp/cmux.sock",
-            terminalStartupCommand: "ssh cmux-macmini"
-        )
-        let vmSSH = WorkspaceRemoteConfiguration(
-            destination: "cmux-macmini",
-            port: 2222,
-            identityFile: "/Users/test/.ssh/id_ed25519",
-            sshOptions: ["ControlPath /tmp/cmux-ssh-%C"],
-            localProxyPort: nil,
-            relayPort: 64099,
-            relayID: "relay-a",
-            relayToken: String(repeating: "a", count: 64),
-            localSocketPath: "/tmp/cmux.sock",
-            terminalStartupCommand: "ssh cmux-macmini",
-            skipDaemonBootstrap: true
-        )
-        let vmWebSocket = WorkspaceRemoteConfiguration(
-            transport: .websocket,
-            destination: "vm:abcd1234",
-            port: nil,
-            identityFile: nil,
-            sshOptions: [],
-            localProxyPort: nil,
-            relayPort: nil,
-            relayID: nil,
-            relayToken: nil,
-            localSocketPath: nil,
-            terminalStartupCommand: "cmux vm-pty-attach --id abcd1234",
-            daemonWebSocketEndpoint: WorkspaceRemoteWebSocketDaemonEndpoint(
-                url: "wss://sandbox.example/rpc",
-                headers: ["e2b-traffic-access-token": "header-a"],
-                token: "token-a",
-                sessionId: "sess-a",
-                expiresAtUnix: 1_800_000_000
-            ),
-            skipDaemonBootstrap: true
-        )
-        let vmWebSocketRefreshed = WorkspaceRemoteConfiguration(
-            transport: .websocket,
-            destination: "vm:abcd1234",
-            port: nil,
-            identityFile: nil,
-            sshOptions: [],
-            localProxyPort: nil,
-            relayPort: nil,
-            relayID: nil,
-            relayToken: nil,
-            localSocketPath: nil,
-            terminalStartupCommand: "cmux vm-pty-attach --id abcd1234",
-            daemonWebSocketEndpoint: WorkspaceRemoteWebSocketDaemonEndpoint(
-                url: "wss://sandbox.example/rpc",
-                headers: ["e2b-traffic-access-token": "header-b"],
-                token: "token-b",
-                sessionId: "sess-b",
-                expiresAtUnix: 1_800_000_100
-            ),
-            skipDaemonBootstrap: true
-        )
-
-        XCTAssertNotEqual(standard.proxyBrokerTransportKey, vmSSH.proxyBrokerTransportKey)
-        XCTAssertNotEqual(vmSSH.proxyBrokerTransportKey, vmWebSocket.proxyBrokerTransportKey)
-        XCTAssertNotEqual(vmWebSocket.proxyBrokerTransportKey, vmWebSocketRefreshed.proxyBrokerTransportKey)
-    }
-
-    @MainActor
-    func testWebSocketVMWithoutDaemonEndpointSkipsProxyStartup() {
-        let workspace = Workspace()
-        let config = WorkspaceRemoteConfiguration(
-            transport: .websocket,
-            destination: "vm:test-no-daemon",
-            port: nil,
-            identityFile: nil,
-            sshOptions: [],
-            localProxyPort: nil,
-            relayPort: nil,
-            relayID: nil,
-            relayToken: nil,
-            localSocketPath: nil,
-            terminalStartupCommand: "cmux vm-pty-attach --id test-no-daemon",
-            skipDaemonBootstrap: true
-        )
-
-        workspace.configureRemoteConnection(config, autoConnect: true)
-
-        XCTAssertEqual(workspace.remoteConnectionState, .connected)
-        XCTAssertNil(workspace.remoteProxyEndpoint)
-    }
-
-    @MainActor
-    func testWebSocketVMWithDaemonEndpointStartsProxyCapableConnection() {
-        let workspace = Workspace()
-        let config = WorkspaceRemoteConfiguration(
-            transport: .websocket,
-            destination: "vm:test-with-daemon",
-            port: nil,
-            identityFile: nil,
-            sshOptions: [],
-            localProxyPort: nil,
-            relayPort: nil,
-            relayID: nil,
-            relayToken: nil,
-            localSocketPath: nil,
-            terminalStartupCommand: "cmux vm-pty-attach --id test-with-daemon",
-            daemonWebSocketEndpoint: WorkspaceRemoteWebSocketDaemonEndpoint(
-                url: "ws://127.0.0.1:65534/rpc",
-                headers: [:],
-                token: "token-a",
-                sessionId: "sess-a",
-                expiresAtUnix: 1_800_000_000
-            ),
-            skipDaemonBootstrap: true
-        )
-
-        workspace.configureRemoteConnection(config, autoConnect: true)
-
-        XCTAssertEqual(workspace.remoteConnectionState, .connecting)
-        workspace.disconnectRemoteConnection(clearConfiguration: true)
-    }
-
-    func testReverseRelayStartupFailureDetailCapturesImmediateForwardingFailure() throws {
-        let process = Process()
-        let stderrPipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", "echo 'remote port forwarding failed for listen port 64009' >&2; exit 1"]
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = stderrPipe
-
-        try process.run()
-
-        let detail = WorkspaceRemoteSessionController.reverseRelayStartupFailureDetail(
-            process: process,
-            stderrPipe: stderrPipe,
-            gracePeriod: 1.0
-        )
-
-        XCTAssertEqual(detail, "remote port forwarding failed for listen port 64009")
-    }
-
-    func testExecutableSearchPathsIncludesHomebrewAndHomeFallbacks() {
-        let paths = WorkspaceRemoteSessionController.executableSearchPaths(
-            environment: [
-                "HOME": "/Users/tester",
-                "PATH": "/usr/bin:/bin",
-            ],
-            pathHelperOutput: "PATH=\"/opt/homebrew/bin:/usr/local/bin:/usr/bin\"; export PATH;\n"
-        )
-
-        XCTAssertEqual(
-            paths,
-            [
-                "/usr/bin",
-                "/bin",
-                "/Users/tester/.local/bin",
-                "/Users/tester/go/bin",
-                "/Users/tester/bin",
-                "/opt/homebrew/bin",
-                "/usr/local/bin",
-                "/opt/homebrew/sbin",
-                "/usr/local/sbin",
-                "/usr/sbin",
-                "/sbin",
-            ]
-        )
-    }
-
-    func testParsePathHelperPathsExtractsPathEntries() {
-        XCTAssertEqual(
-            WorkspaceRemoteSessionController.parsePathHelperPaths(
-                "PATH=\"/opt/homebrew/bin:/usr/local/bin:/usr/bin\"; export PATH;\n"
-            ),
-            [
-                "/opt/homebrew/bin",
-                "/usr/local/bin",
-                "/usr/bin",
-            ]
-        )
-    }
-
-    func testParsePathHelperPathsIgnoresMANPATHAssignments() {
-        XCTAssertEqual(
-            WorkspaceRemoteSessionController.parsePathHelperPaths(
-                """
-                MANPATH="/opt/homebrew/share/man:/usr/share/man"; export MANPATH;
-                PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin"; export PATH;
-                """
-            ),
-            [
-                "/opt/homebrew/bin",
-                "/usr/local/bin",
-                "/usr/bin",
-            ]
-        )
-    }
-
     @MainActor
     func testRemoteTerminalSurfaceLookupTracksOnlyActiveSSHSurfaces() throws {
         let workspace = Workspace()
@@ -501,13 +193,7 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
             destination: "cmux-macmini",
             port: nil,
             identityFile: nil,
-            sshOptions: [],
-            localProxyPort: nil,
-            relayPort: 64007,
-            relayID: String(repeating: "a", count: 16),
-            relayToken: String(repeating: "b", count: 64),
-            localSocketPath: "/tmp/cmux-debug-test.sock",
-            terminalStartupCommand: "ssh cmux-macmini"
+            sshOptions: []
         )
 
         workspace.configureRemoteConnection(config, autoConnect: false)
@@ -520,742 +206,27 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
     }
 
     @MainActor
-    func testForegroundSSHAuthReadyBeforeRemoteConfigureStartsDeferredConnect() {
-        let workspace = Workspace()
-        let config = WorkspaceRemoteConfiguration(
-            destination: "cmux-macmini",
-            port: nil,
-            identityFile: nil,
-            sshOptions: [],
-            localProxyPort: nil,
-            relayPort: 64029,
-            relayID: String(repeating: "a", count: 16),
-            relayToken: String(repeating: "b", count: 64),
-            localSocketPath: "/tmp/cmux-debug-test.sock",
-            terminalStartupCommand: "ssh cmux-macmini",
-            foregroundAuthToken: "token-a"
-        )
-
-        workspace.notifyRemoteForegroundAuthenticationReady(token: "token-a")
-        workspace.configureRemoteConnection(config, autoConnect: false)
-
-        XCTAssertEqual(workspace.remoteConnectionState, .connecting)
-        workspace.disconnectRemoteConnection(clearConfiguration: true)
-    }
-
-    @MainActor
-    func testForegroundSSHAuthReadyReconnectsConfiguredDisconnectedRemoteWorkspace() {
-        let workspace = Workspace()
-        let config = WorkspaceRemoteConfiguration(
-            destination: "cmux-macmini",
-            port: nil,
-            identityFile: nil,
-            sshOptions: [],
-            localProxyPort: nil,
-            relayPort: 64030,
-            relayID: String(repeating: "a", count: 16),
-            relayToken: String(repeating: "b", count: 64),
-            localSocketPath: "/tmp/cmux-debug-test.sock",
-            terminalStartupCommand: "ssh cmux-macmini",
-            foregroundAuthToken: "token-a"
-        )
-
-        workspace.configureRemoteConnection(config, autoConnect: false)
-        XCTAssertEqual(workspace.remoteConnectionState, .disconnected)
-
-        workspace.notifyRemoteForegroundAuthenticationReady(token: "token-a")
-
-        XCTAssertEqual(workspace.remoteConnectionState, .connecting)
-        workspace.disconnectRemoteConnection(clearConfiguration: true)
-    }
-
-    @MainActor
-    func testForegroundSSHAuthReadyBufferedTokenDoesNotReconnectDifferentConfiguration() {
-        let workspace = Workspace()
-        let config = WorkspaceRemoteConfiguration(
-            destination: "cmux-macmini",
-            port: nil,
-            identityFile: nil,
-            sshOptions: [],
-            localProxyPort: nil,
-            relayPort: 64031,
-            relayID: String(repeating: "a", count: 16),
-            relayToken: String(repeating: "b", count: 64),
-            localSocketPath: "/tmp/cmux-debug-test.sock",
-            terminalStartupCommand: "ssh cmux-macmini",
-            foregroundAuthToken: "token-b"
-        )
-
-        workspace.notifyRemoteForegroundAuthenticationReady(token: "token-a")
-        workspace.configureRemoteConnection(config, autoConnect: false)
-
-        XCTAssertEqual(workspace.remoteConnectionState, .disconnected)
-    }
-
-    @MainActor
     func testRemoteReconnectingStateIsExposedInStatusPayload() {
         let workspace = Workspace()
         let config = WorkspaceRemoteConfiguration(
             destination: "cmux-macmini",
             port: nil,
             identityFile: nil,
-            sshOptions: [],
-            localProxyPort: nil,
-            relayPort: 64033,
-            relayID: String(repeating: "a", count: 16),
-            relayToken: String(repeating: "b", count: 64),
-            localSocketPath: "/tmp/cmux-debug-test.sock",
-            terminalStartupCommand: "ssh cmux-macmini"
+            sshOptions: []
         )
 
         workspace.configureRemoteConnection(config, autoConnect: false)
-        workspace.applyRemoteConnectionStateUpdate(
-            .reconnecting,
-            detail: "Reconnecting to cmux-macmini",
-            target: "cmux-macmini"
+        // Drive the terminal transport through the single reducer-backed
+        // writer (the same path the live SSH observer uses). A `.disconnected`
+        // tick re-arms a relentless reconnect, mapping `.transport` to
+        // `.reconnecting` — the migrated equivalent of the removed
+        // `applyRemoteConnectionStateUpdate(.reconnecting, …)` setter.
+        workspace.acceptTerminalTransportState(
+            .disconnected(.init(attemptsMade: 1, reason: .exhausted))
         )
 
         XCTAssertEqual(workspace.remoteConnectionState, .reconnecting)
         XCTAssertEqual(workspace.remoteStatusPayload()["state"] as? String, "reconnecting")
-    }
-
-    @MainActor
-    func testForegroundSSHAuthReadyIgnoresMismatchedConfiguredToken() {
-        let workspace = Workspace()
-        let config = WorkspaceRemoteConfiguration(
-            destination: "cmux-macmini",
-            port: nil,
-            identityFile: nil,
-            sshOptions: [],
-            localProxyPort: nil,
-            relayPort: 64032,
-            relayID: String(repeating: "a", count: 16),
-            relayToken: String(repeating: "b", count: 64),
-            localSocketPath: "/tmp/cmux-debug-test.sock",
-            terminalStartupCommand: "ssh cmux-macmini",
-            foregroundAuthToken: "token-a"
-        )
-
-        workspace.configureRemoteConnection(config, autoConnect: false)
-        workspace.notifyRemoteForegroundAuthenticationReady(token: "token-b")
-
-        XCTAssertEqual(workspace.remoteConnectionState, .disconnected)
-    }
-
-    @MainActor
-    func testRemoteTerminalSessionEndRequestsControlMasterCleanupWhenWorkspaceDemotes() throws {
-        let workspace = Workspace()
-        let config = WorkspaceRemoteConfiguration(
-            destination: "cmux-macmini",
-            port: 2222,
-            identityFile: "/Users/test/.ssh/id_ed25519",
-            sshOptions: [
-                "ControlMaster=auto",
-                "ControlPersist=600",
-                "ControlPath=/tmp/cmux-ssh-%C",
-                "StrictHostKeyChecking=accept-new",
-            ],
-            localProxyPort: nil,
-            relayPort: 64012,
-            relayID: String(repeating: "a", count: 16),
-            relayToken: String(repeating: "b", count: 64),
-            localSocketPath: "/tmp/cmux-debug-test.sock",
-            terminalStartupCommand: "ssh cmux-macmini"
-        )
-        let cleanupRequested = expectation(description: "control master cleanup requested")
-        var capturedArguments: [String] = []
-
-        Workspace.runSSHControlMasterCommandOverrideForTesting = { arguments in
-            capturedArguments = arguments
-            cleanupRequested.fulfill()
-        }
-        defer { Workspace.runSSHControlMasterCommandOverrideForTesting = nil }
-
-        workspace.configureRemoteConnection(config, autoConnect: false)
-
-        let panelID = try XCTUnwrap(workspace.focusedTerminalPanel?.id)
-        workspace.markRemoteTerminalSessionEnded(surfaceId: panelID, relayPort: 64012)
-
-        wait(for: [cleanupRequested], timeout: 1.0)
-
-        XCTAssertFalse(workspace.isRemoteWorkspace)
-        XCTAssertEqual(workspace.activeRemoteTerminalSessionCount, 0)
-        XCTAssertEqual(
-            capturedArguments,
-            [
-                "-o", "BatchMode=yes",
-                "-o", "ControlMaster=no",
-                "-p", "2222",
-                "-i", "/Users/test/.ssh/id_ed25519",
-                "-o", "ControlPath=/tmp/cmux-ssh-%C",
-                "-o", "StrictHostKeyChecking=accept-new",
-                "-O", "exit",
-                "cmux-macmini",
-            ]
-        )
-    }
-
-    @MainActor
-    func testTeardownRemoteConnectionRequestsControlMasterCleanupWhileStillConnecting() {
-        let workspace = Workspace()
-        let config = WorkspaceRemoteConfiguration(
-            destination: "cmux-macmini",
-            port: nil,
-            identityFile: nil,
-            sshOptions: [
-                "ControlMaster=auto",
-                "ControlPersist=600",
-                "ControlPath=/tmp/cmux-ssh-%C",
-            ],
-            localProxyPort: nil,
-            relayPort: 64014,
-            relayID: String(repeating: "a", count: 16),
-            relayToken: String(repeating: "b", count: 64),
-            localSocketPath: "/tmp/cmux-debug-test.sock",
-            terminalStartupCommand: "ssh cmux-macmini"
-        )
-        let cleanupRequested = expectation(description: "control master cleanup requested")
-        var capturedArguments: [String] = []
-
-        Workspace.runSSHControlMasterCommandOverrideForTesting = { arguments in
-            capturedArguments = arguments
-            cleanupRequested.fulfill()
-        }
-        defer { Workspace.runSSHControlMasterCommandOverrideForTesting = nil }
-
-        workspace.configureRemoteConnection(config, autoConnect: false)
-        workspace.applyRemoteConnectionStateUpdate(
-            .connecting,
-            detail: "Connecting to cmux-macmini",
-            target: "cmux-macmini"
-        )
-
-        workspace.teardownRemoteConnection()
-
-        wait(for: [cleanupRequested], timeout: 1.0)
-
-        XCTAssertFalse(workspace.isRemoteWorkspace)
-        XCTAssertEqual(
-            capturedArguments,
-            [
-                "-o", "BatchMode=yes",
-                "-o", "ControlMaster=no",
-                "-o", "ControlPath=/tmp/cmux-ssh-%C",
-                "-O", "exit",
-                "cmux-macmini",
-            ]
-        )
-    }
-
-    @MainActor
-    func testTeardownRemoteConnectionRequestsControlMasterCleanupWithoutExplicitControlPath() {
-        let workspace = Workspace()
-        let config = WorkspaceRemoteConfiguration(
-            destination: "cmux-macmini",
-            port: nil,
-            identityFile: nil,
-            sshOptions: [],
-            localProxyPort: nil,
-            relayPort: 64015,
-            relayID: String(repeating: "a", count: 16),
-            relayToken: String(repeating: "b", count: 64),
-            localSocketPath: "/tmp/cmux-debug-test.sock",
-            terminalStartupCommand: "ssh cmux-macmini"
-        )
-        let cleanupRequested = expectation(description: "control master cleanup requested")
-        var capturedArguments: [String] = []
-
-        Workspace.runSSHControlMasterCommandOverrideForTesting = { arguments in
-            capturedArguments = arguments
-            cleanupRequested.fulfill()
-        }
-        defer { Workspace.runSSHControlMasterCommandOverrideForTesting = nil }
-
-        workspace.configureRemoteConnection(config, autoConnect: false)
-        workspace.applyRemoteConnectionStateUpdate(
-            .connecting,
-            detail: "Connecting to cmux-macmini",
-            target: "cmux-macmini"
-        )
-
-        workspace.teardownRemoteConnection()
-
-        wait(for: [cleanupRequested], timeout: 1.0)
-
-        XCTAssertFalse(workspace.isRemoteWorkspace)
-        XCTAssertEqual(
-            capturedArguments,
-            [
-                "-o", "BatchMode=yes",
-                "-o", "ControlMaster=no",
-                "-O", "exit",
-                "cmux-macmini",
-            ]
-        )
-    }
-
-    @MainActor
-    func testClosingRemoteWorkspaceRequestsControlMasterCleanup() throws {
-        let manager = TabManager()
-        let remainingWorkspace = try XCTUnwrap(manager.selectedWorkspace)
-        let remoteWorkspace = manager.addWorkspace()
-        let config = WorkspaceRemoteConfiguration(
-            destination: "cmux-macmini",
-            port: 2222,
-            identityFile: "/Users/test/.ssh/id_ed25519",
-            sshOptions: [
-                "ControlMaster=auto",
-                "ControlPersist=600",
-                "ControlPath=/tmp/cmux-ssh-%C",
-                "StrictHostKeyChecking=accept-new",
-            ],
-            localProxyPort: nil,
-            relayPort: 64018,
-            relayID: String(repeating: "a", count: 16),
-            relayToken: String(repeating: "b", count: 64),
-            localSocketPath: "/tmp/cmux-debug-test.sock",
-            terminalStartupCommand: "ssh cmux-macmini"
-        )
-        let cleanupRequested = expectation(description: "control master cleanup requested")
-        var capturedArguments: [String] = []
-
-        Workspace.runSSHControlMasterCommandOverrideForTesting = { arguments in
-            capturedArguments = arguments
-            cleanupRequested.fulfill()
-        }
-        defer { Workspace.runSSHControlMasterCommandOverrideForTesting = nil }
-
-        remoteWorkspace.configureRemoteConnection(config, autoConnect: false)
-
-        manager.closeWorkspace(remoteWorkspace)
-
-        wait(for: [cleanupRequested], timeout: 1.0)
-
-        XCTAssertEqual(manager.tabs.count, 1)
-        XCTAssertEqual(manager.tabs.first?.id, remainingWorkspace.id)
-        XCTAssertFalse(manager.tabs.contains(where: { $0.id == remoteWorkspace.id }))
-        XCTAssertFalse(remoteWorkspace.isRemoteWorkspace)
-        XCTAssertEqual(
-            capturedArguments,
-            [
-                "-o", "BatchMode=yes",
-                "-o", "ControlMaster=no",
-                "-p", "2222",
-                "-i", "/Users/test/.ssh/id_ed25519",
-                "-o", "ControlPath=/tmp/cmux-ssh-%C",
-                "-o", "StrictHostKeyChecking=accept-new",
-                "-O", "exit",
-                "cmux-macmini",
-            ]
-        )
-    }
-
-    @MainActor
-    func testDetachLastRemoteSurfacePreservesRemoteSessionWithoutCleanup() throws {
-        let workspace = Workspace()
-        let config = WorkspaceRemoteConfiguration(
-            destination: "cmux-macmini",
-            port: nil,
-            identityFile: nil,
-            sshOptions: [
-                "ControlMaster=auto",
-                "ControlPersist=600",
-                "ControlPath=/tmp/cmux-ssh-%C",
-            ],
-            localProxyPort: nil,
-            relayPort: 64016,
-            relayID: String(repeating: "a", count: 16),
-            relayToken: String(repeating: "b", count: 64),
-            localSocketPath: "/tmp/cmux-debug-test.sock",
-            terminalStartupCommand: "ssh cmux-macmini"
-        )
-        let cleanupRequested = expectation(description: "control master cleanup requested")
-        cleanupRequested.isInverted = true
-
-        Workspace.runSSHControlMasterCommandOverrideForTesting = { _ in
-            cleanupRequested.fulfill()
-        }
-        defer { Workspace.runSSHControlMasterCommandOverrideForTesting = nil }
-
-        workspace.configureRemoteConnection(config, autoConnect: false)
-
-        let paneID = try XCTUnwrap(workspace.bonsplitController.allPaneIds.first)
-        let panelID = try XCTUnwrap(workspace.focusedTerminalPanel?.id)
-        let detached = try XCTUnwrap(workspace.detachSurface(panelId: panelID))
-
-        wait(for: [cleanupRequested], timeout: 1.0)
-
-        XCTAssertTrue(detached.isRemoteTerminal)
-        XCTAssertTrue(workspace.isRemoteWorkspace)
-        XCTAssertEqual(workspace.activeRemoteTerminalSessionCount, 0)
-
-        let reattachedSurfaceID = workspace.attachDetachedSurface(detached, inPane: paneID, focus: false)
-
-        XCTAssertNotNil(reattachedSurfaceID)
-        XCTAssertTrue(workspace.isRemoteWorkspace)
-        XCTAssertEqual(workspace.activeRemoteTerminalSessionCount, 1)
-        XCTAssertTrue(workspace.isRemoteTerminalSurface(detached.panelId))
-    }
-
-    @MainActor
-    func testClosingSourceWorkspaceAfterDetachingRemoteSurfaceSkipsControlMasterCleanup() throws {
-        let manager = TabManager()
-        let sourceWorkspace = try XCTUnwrap(manager.selectedWorkspace)
-        let destinationWorkspace = manager.addWorkspace()
-        let config = WorkspaceRemoteConfiguration(
-            destination: "cmux-macmini",
-            port: nil,
-            identityFile: nil,
-            sshOptions: [
-                "ControlMaster=auto",
-                "ControlPersist=600",
-                "ControlPath=/tmp/cmux-ssh-%C",
-            ],
-            localProxyPort: nil,
-            relayPort: 64017,
-            relayID: String(repeating: "a", count: 16),
-            relayToken: String(repeating: "b", count: 64),
-            localSocketPath: "/tmp/cmux-debug-test.sock",
-            terminalStartupCommand: "ssh cmux-macmini"
-        )
-        let cleanupRequested = expectation(description: "control master cleanup requested")
-        cleanupRequested.isInverted = true
-
-        Workspace.runSSHControlMasterCommandOverrideForTesting = { _ in
-            cleanupRequested.fulfill()
-        }
-        defer { Workspace.runSSHControlMasterCommandOverrideForTesting = nil }
-
-        sourceWorkspace.configureRemoteConnection(config, autoConnect: false)
-
-        let panelID = try XCTUnwrap(sourceWorkspace.focusedTerminalPanel?.id)
-        let detached = try XCTUnwrap(sourceWorkspace.detachSurface(panelId: panelID))
-        let destinationPaneID = try XCTUnwrap(destinationWorkspace.bonsplitController.allPaneIds.first)
-
-        let restoredPanelID = destinationWorkspace.attachDetachedSurface(
-            detached,
-            inPane: destinationPaneID,
-            focus: false
-        )
-
-        XCTAssertNotNil(restoredPanelID)
-        XCTAssertTrue(destinationWorkspace.panels.keys.contains(detached.panelId))
-        XCTAssertTrue(sourceWorkspace.panels.isEmpty)
-
-        manager.closeWorkspace(sourceWorkspace)
-
-        wait(for: [cleanupRequested], timeout: 1.0)
-
-        XCTAssertFalse(manager.tabs.contains(where: { $0.id == sourceWorkspace.id }))
-        XCTAssertTrue(destinationWorkspace.panels.keys.contains(detached.panelId))
-    }
-
-    @MainActor
-    func testClosingMixedSourceWorkspaceAfterDetachingLastRemoteSurfaceSkipsControlMasterCleanup() throws {
-        let manager = TabManager()
-        let sourceWorkspace = try XCTUnwrap(manager.selectedWorkspace)
-        let destinationWorkspace = manager.addWorkspace()
-        let sourcePaneID = try XCTUnwrap(sourceWorkspace.bonsplitController.allPaneIds.first)
-        let config = WorkspaceRemoteConfiguration(
-            destination: "cmux-macmini",
-            port: nil,
-            identityFile: nil,
-            sshOptions: [
-                "ControlMaster=auto",
-                "ControlPersist=600",
-                "ControlPath=/tmp/cmux-ssh-%C",
-            ],
-            localProxyPort: nil,
-            relayPort: 64018,
-            relayID: String(repeating: "a", count: 16),
-            relayToken: String(repeating: "b", count: 64),
-            localSocketPath: "/tmp/cmux-debug-test.sock",
-            terminalStartupCommand: "ssh cmux-macmini"
-        )
-        let cleanupRequested = expectation(description: "control master cleanup requested")
-        cleanupRequested.isInverted = true
-
-        Workspace.runSSHControlMasterCommandOverrideForTesting = { _ in
-            cleanupRequested.fulfill()
-        }
-        defer { Workspace.runSSHControlMasterCommandOverrideForTesting = nil }
-
-        sourceWorkspace.configureRemoteConnection(config, autoConnect: false)
-        _ = sourceWorkspace.newBrowserSurface(inPane: sourcePaneID, url: URL(string: "https://example.com"), focus: false)
-
-        let panelID = try XCTUnwrap(sourceWorkspace.focusedTerminalPanel?.id)
-        let detached = try XCTUnwrap(sourceWorkspace.detachSurface(panelId: panelID))
-        let destinationPaneID = try XCTUnwrap(destinationWorkspace.bonsplitController.allPaneIds.first)
-
-        let restoredPanelID = destinationWorkspace.attachDetachedSurface(
-            detached,
-            inPane: destinationPaneID,
-            focus: false
-        )
-
-        XCTAssertNotNil(restoredPanelID)
-        XCTAssertEqual(sourceWorkspace.panels.count, 1)
-        XCTAssertTrue(destinationWorkspace.panels.keys.contains(detached.panelId))
-
-        manager.closeWorkspace(sourceWorkspace)
-
-        wait(for: [cleanupRequested], timeout: 1.0)
-
-        XCTAssertFalse(manager.tabs.contains(where: { $0.id == sourceWorkspace.id }))
-        XCTAssertTrue(destinationWorkspace.panels.keys.contains(detached.panelId))
-    }
-
-    @MainActor
-    func testTransferredRemoteSurfaceCleansUpControlMasterWhenSessionEndsInLocalWorkspace() throws {
-        let manager = TabManager()
-        let sourceWorkspace = try XCTUnwrap(manager.selectedWorkspace)
-        let destinationWorkspace = manager.addWorkspace()
-        let config = WorkspaceRemoteConfiguration(
-            destination: "cmux-macmini",
-            port: nil,
-            identityFile: nil,
-            sshOptions: [
-                "ControlMaster=auto",
-                "ControlPersist=600",
-                "ControlPath=/tmp/cmux-ssh-%C",
-            ],
-            localProxyPort: nil,
-            relayPort: 64019,
-            relayID: String(repeating: "a", count: 16),
-            relayToken: String(repeating: "b", count: 64),
-            localSocketPath: "/tmp/cmux-debug-test.sock",
-            terminalStartupCommand: "ssh cmux-macmini"
-        )
-        let cleanupRequested = expectation(description: "control master cleanup requested")
-        var cleanupArguments: [[String]] = []
-
-        Workspace.runSSHControlMasterCommandOverrideForTesting = { arguments in
-            cleanupArguments.append(arguments)
-            cleanupRequested.fulfill()
-        }
-        defer { Workspace.runSSHControlMasterCommandOverrideForTesting = nil }
-
-        sourceWorkspace.configureRemoteConnection(config, autoConnect: false)
-
-        let panelID = try XCTUnwrap(sourceWorkspace.focusedTerminalPanel?.id)
-        let detached = try XCTUnwrap(sourceWorkspace.detachSurface(panelId: panelID))
-        let destinationPaneID = try XCTUnwrap(destinationWorkspace.bonsplitController.allPaneIds.first)
-
-        let restoredPanelID = destinationWorkspace.attachDetachedSurface(
-            detached,
-            inPane: destinationPaneID,
-            focus: false
-        )
-
-        XCTAssertNotNil(restoredPanelID)
-        XCTAssertFalse(destinationWorkspace.isRemoteWorkspace)
-        XCTAssertEqual(destinationWorkspace.activeRemoteTerminalSessionCount, 0)
-
-        manager.closeWorkspace(sourceWorkspace)
-        destinationWorkspace.markRemoteTerminalSessionEnded(surfaceId: detached.panelId, relayPort: config.relayPort)
-
-        wait(for: [cleanupRequested], timeout: 1.0)
-
-        XCTAssertEqual(cleanupArguments.count, 1)
-        XCTAssertEqual(cleanupArguments.first?.suffix(2), ["exit", "cmux-macmini"])
-    }
-
-    @MainActor
-    func testRemoteTerminalSessionEndSkipsControlMasterCleanupWhenBrowserPanelsKeepWorkspaceRemote() throws {
-        let workspace = Workspace()
-        let paneID = try XCTUnwrap(workspace.bonsplitController.allPaneIds.first)
-        let initialTerminalID = try XCTUnwrap(workspace.focusedTerminalPanel?.id)
-        let config = WorkspaceRemoteConfiguration(
-            destination: "cmux-macmini",
-            port: nil,
-            identityFile: nil,
-            sshOptions: [
-                "ControlMaster=auto",
-                "ControlPersist=600",
-                "ControlPath=/tmp/cmux-ssh-%C",
-            ],
-            localProxyPort: nil,
-            relayPort: 64013,
-            relayID: String(repeating: "a", count: 16),
-            relayToken: String(repeating: "b", count: 64),
-            localSocketPath: "/tmp/cmux-debug-test.sock",
-            terminalStartupCommand: "ssh cmux-macmini"
-        )
-        let cleanupRequested = expectation(description: "control master cleanup requested")
-        cleanupRequested.isInverted = true
-
-        Workspace.runSSHControlMasterCommandOverrideForTesting = { _ in
-            cleanupRequested.fulfill()
-        }
-        defer { Workspace.runSSHControlMasterCommandOverrideForTesting = nil }
-
-        workspace.configureRemoteConnection(config, autoConnect: false)
-        _ = workspace.newBrowserSurface(inPane: paneID, url: URL(string: "https://example.com"), focus: false)
-
-        workspace.markRemoteTerminalSessionEnded(surfaceId: initialTerminalID, relayPort: 64013)
-
-        wait(for: [cleanupRequested], timeout: 1.0)
-
-        XCTAssertTrue(workspace.isRemoteWorkspace)
-        XCTAssertEqual(workspace.activeRemoteTerminalSessionCount, 0)
-    }
-
-    @MainActor
-    func testClosingInitialRemoteTerminalPaneKeepsSiblingRemotePaneAlive() throws {
-        let workspace = Workspace()
-        let initialTerminalID = try XCTUnwrap(workspace.focusedTerminalPanel?.id)
-        let configuration = WorkspaceRemoteConfiguration(
-            destination: "cmux-macmini",
-            port: nil,
-            identityFile: nil,
-            sshOptions: [
-                "ControlMaster=auto",
-                "ControlPersist=600",
-                "ControlPath=/tmp/cmux-ssh-%C",
-            ],
-            localProxyPort: nil,
-            relayPort: 64020,
-            relayID: String(repeating: "a", count: 16),
-            relayToken: String(repeating: "b", count: 64),
-            localSocketPath: "/tmp/cmux-debug-test.sock",
-            terminalStartupCommand: "ssh cmux-macmini"
-        )
-        var cleanupArguments: [[String]] = []
-        let cleanupRequested = expectation(description: "control master cleanup requested")
-        cleanupRequested.isInverted = true
-
-        Workspace.runSSHControlMasterCommandOverrideForTesting = { arguments in
-            cleanupArguments.append(arguments)
-            cleanupRequested.fulfill()
-        }
-        defer { Workspace.runSSHControlMasterCommandOverrideForTesting = nil }
-
-        workspace.configureRemoteConnection(configuration, autoConnect: false)
-        let siblingTerminal = try XCTUnwrap(
-            workspace.newTerminalSplit(from: initialTerminalID, orientation: .horizontal)
-        )
-
-        XCTAssertEqual(workspace.activeRemoteTerminalSessionCount, 2)
-        XCTAssertTrue(workspace.isRemoteTerminalSurface(initialTerminalID))
-        XCTAssertTrue(workspace.isRemoteTerminalSurface(siblingTerminal.id))
-
-        XCTAssertTrue(workspace.closePanel(initialTerminalID, force: true))
-
-        XCTAssertNil(workspace.panels[initialTerminalID])
-        XCTAssertNotNil(workspace.panels[siblingTerminal.id])
-        XCTAssertTrue(workspace.isRemoteWorkspace)
-        XCTAssertFalse(workspace.isRemoteTerminalSurface(initialTerminalID))
-        XCTAssertTrue(workspace.isRemoteTerminalSurface(siblingTerminal.id))
-        XCTAssertEqual(workspace.activeRemoteTerminalSessionCount, 1)
-        wait(for: [cleanupRequested], timeout: 0.2)
-        XCTAssertTrue(cleanupArguments.isEmpty)
-    }
-
-    func testRemoteDropPathUsesLowercasedExtensionAndProvidedUUID() throws {
-        let fileURL = URL(fileURLWithPath: "/Users/test/Screen Shot.PNG")
-        let uuid = try XCTUnwrap(UUID(uuidString: "12345678-1234-1234-1234-1234567890AB"))
-
-        let remotePath = WorkspaceRemoteSessionController.remoteDropPath(for: fileURL, uuid: uuid)
-
-        XCTAssertEqual(remotePath, "/tmp/cmux-drop-12345678-1234-1234-1234-1234567890ab.png")
-    }
-
-    @MainActor
-    func testDaemonBootstrapUploadUsesAbsoluteHomePathForScpDestination() throws {
-        let fileManager = FileManager.default
-        let directoryURL = fileManager.temporaryDirectory.appendingPathComponent(
-            "cmux-remote-daemon-upload-\(UUID().uuidString)",
-            isDirectory: true
-        )
-        try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-        defer { try? fileManager.removeItem(at: directoryURL) }
-
-        let fakeDaemonURL = directoryURL.appendingPathComponent("cmuxd-remote", isDirectory: false)
-        try Data("fake daemon".utf8).write(to: fakeDaemonURL)
-        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeDaemonURL.path)
-
-        let previousAllowLocalBuild = getenv("CMUX_REMOTE_DAEMON_ALLOW_LOCAL_BUILD").map { String(cString: $0) }
-        let previousDaemonBinary = getenv("CMUX_REMOTE_DAEMON_BINARY").map { String(cString: $0) }
-        setenv("CMUX_REMOTE_DAEMON_ALLOW_LOCAL_BUILD", "1", 1)
-        setenv("CMUX_REMOTE_DAEMON_BINARY", fakeDaemonURL.path, 1)
-        defer {
-            if let previousAllowLocalBuild {
-                setenv("CMUX_REMOTE_DAEMON_ALLOW_LOCAL_BUILD", previousAllowLocalBuild, 1)
-            } else {
-                unsetenv("CMUX_REMOTE_DAEMON_ALLOW_LOCAL_BUILD")
-            }
-            if let previousDaemonBinary {
-                setenv("CMUX_REMOTE_DAEMON_BINARY", previousDaemonBinary, 1)
-            } else {
-                unsetenv("CMUX_REMOTE_DAEMON_BINARY")
-            }
-        }
-
-        let scpInvoked = DispatchSemaphore(value: 0)
-        let lock = NSLock()
-        var scpDestination: String?
-        WorkspaceRemoteSessionController.runProcessOverrideForTesting = { executable, arguments, _, _ in
-            if executable == "/usr/bin/ssh" {
-                let command = arguments.last ?? ""
-                if command.contains("uname -s") {
-                    return (
-                        status: 0,
-                        stdout: """
-                        __CMUX_REMOTE_HOME__=/home/test
-                        __CMUX_REMOTE_OS__=Linux
-                        __CMUX_REMOTE_ARCH__=x86_64
-                        __CMUX_REMOTE_EXISTS__=no
-                        """,
-                        stderr: ""
-                    )
-                }
-                if command.contains("mkdir -p") {
-                    return (status: 0, stdout: "", stderr: "")
-                }
-                return (status: 0, stdout: "", stderr: "")
-            }
-            if executable == "/usr/bin/scp" {
-                lock.lock()
-                scpDestination = arguments.last
-                lock.unlock()
-                scpInvoked.signal()
-                return (status: 1, stdout: "", stderr: "intentional stop after upload destination capture")
-            }
-            XCTFail("unexpected executable \(executable)")
-            return (status: 1, stdout: "", stderr: "unexpected executable")
-        }
-        defer { WorkspaceRemoteSessionController.runProcessOverrideForTesting = nil }
-
-        let workspace = Workspace()
-        let config = WorkspaceRemoteConfiguration(
-            destination: "test@hpc.example",
-            port: 2222,
-            identityFile: "/Users/test/.ssh/id_ed25519",
-            sshOptions: [],
-            localProxyPort: nil,
-            relayPort: nil,
-            relayID: nil,
-            relayToken: nil,
-            localSocketPath: nil,
-            terminalStartupCommand: "ssh test@hpc.example"
-        )
-        defer { workspace.disconnectRemoteConnection(clearConfiguration: true) }
-
-        workspace.configureRemoteConnection(config, autoConnect: true)
-
-        XCTAssertEqual(scpInvoked.wait(timeout: .now() + 2), .success)
-        lock.lock()
-        let capturedDestination = scpDestination
-        lock.unlock()
-        let destination = try XCTUnwrap(capturedDestination)
-        XCTAssertTrue(
-            destination.hasPrefix("test@hpc.example:/home/test/.cmux/bin/cmuxd-remote/"),
-            "expected scp to target an absolute path under remote HOME, got \(destination)"
-        )
-        XCTAssertTrue(
-            destination.contains("/linux-amd64/cmuxd-remote.tmp-"),
-            "expected daemon platform temp path in \(destination)"
-        )
     }
 
     @MainActor
@@ -1265,13 +236,7 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
             destination: "cmux-macmini",
             port: nil,
             identityFile: nil,
-            sshOptions: [],
-            localProxyPort: nil,
-            relayPort: 64007,
-            relayID: String(repeating: "a", count: 16),
-            relayToken: String(repeating: "b", count: 64),
-            localSocketPath: "/tmp/cmux-debug-test.sock",
-            terminalStartupCommand: "ssh cmux-macmini"
+            sshOptions: []
         )
 
         workspace.configureRemoteConnection(config, autoConnect: false)
@@ -1287,7 +252,7 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
 
         let detached = try XCTUnwrap(workspace.detachSurface(panelId: movedPanel.id))
         XCTAssertTrue(detached.isRemoteTerminal)
-        XCTAssertEqual(detached.remoteRelayPort, config.relayPort)
+        XCTAssertNil(detached.remoteRelayPort)
 
         let restoredPanelID = workspace.attachDetachedSurface(
             detached,
@@ -1452,138 +417,6 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
         XCTAssertTrue(scpArgs.contains("ControlPath=/tmp/cmux-ssh-%C"))
         XCTAssertFalse(scpArgs.contains("-S"))
     }
-
-    func testDaemonTransportArgumentsReuseConfiguredControlPath() {
-        let configuration = WorkspaceRemoteConfiguration(
-            destination: "cmux-macmini",
-            port: 2222,
-            identityFile: "/Users/test/.ssh/id_ed25519",
-            sshOptions: [
-                "ControlMaster=auto",
-                "ControlPersist=600",
-                "ControlPath=/tmp/cmux-ssh-%C",
-                "StrictHostKeyChecking=accept-new",
-            ],
-            localProxyPort: nil,
-            relayPort: nil,
-            relayID: nil,
-            relayToken: nil,
-            localSocketPath: nil,
-            terminalStartupCommand: "ssh cmux-macmini"
-        )
-
-        let arguments = WorkspaceRemoteSSHBatchCommandBuilder.daemonTransportArguments(
-            configuration: configuration,
-            remotePath: "/remote/cmuxd-remote"
-        )
-
-        XCTAssertFalse(arguments.contains("-S"))
-        XCTAssertTrue(arguments.contains("ControlMaster=no"))
-        XCTAssertTrue(arguments.contains(where: { $0 == "ControlPath /tmp/cmux-ssh-%C" || $0 == "ControlPath=/tmp/cmux-ssh-%C" }))
-        XCTAssertTrue(arguments.contains("cmux-macmini"))
-        XCTAssertTrue(arguments.last?.contains("/remote/cmuxd-remote") ?? false)
-    }
-
-    func testDaemonTransportArgumentsReuseWhitespaceConfiguredControlPath() {
-        let configuration = WorkspaceRemoteConfiguration(
-            destination: "cmux-macmini",
-            port: 2222,
-            identityFile: "/Users/test/.ssh/id_ed25519",
-            sshOptions: [
-                "ControlMaster auto",
-                "ControlPersist 600",
-                "ControlPath /tmp/cmux-ssh-%C",
-                "StrictHostKeyChecking accept-new",
-            ],
-            localProxyPort: nil,
-            relayPort: nil,
-            relayID: nil,
-            relayToken: nil,
-            localSocketPath: nil,
-            terminalStartupCommand: "ssh cmux-macmini"
-        )
-
-        let arguments = WorkspaceRemoteSSHBatchCommandBuilder.daemonTransportArguments(
-            configuration: configuration,
-            remotePath: "/remote/cmuxd-remote"
-        )
-
-        XCTAssertFalse(arguments.contains("-S"))
-        XCTAssertTrue(arguments.contains("ControlMaster=no"))
-        XCTAssertTrue(arguments.contains(where: { $0 == "ControlPath /tmp/cmux-ssh-%C" || $0 == "ControlPath=/tmp/cmux-ssh-%C" }))
-    }
-
-    func testReverseRelayControlMasterArgumentsReuseConfiguredControlSocket() throws {
-        let configuration = WorkspaceRemoteConfiguration(
-            destination: "cmux-macmini",
-            port: 2222,
-            identityFile: "/Users/test/.ssh/id_ed25519",
-            sshOptions: [
-                "ControlMaster=auto",
-                "ControlPersist=600",
-                "ControlPath=/tmp/cmux-ssh-%C",
-                "StrictHostKeyChecking=accept-new",
-            ],
-            localProxyPort: nil,
-            relayPort: 64007,
-            relayID: nil,
-            relayToken: nil,
-            localSocketPath: nil,
-            terminalStartupCommand: "ssh cmux-macmini"
-        )
-
-        let arguments = try XCTUnwrap(
-            WorkspaceRemoteSSHBatchCommandBuilder.reverseRelayControlMasterArguments(
-                configuration: configuration,
-                controlCommand: "forward",
-                forwardSpec: "127.0.0.1:64007:127.0.0.1:54321"
-            )
-        )
-
-        XCTAssertFalse(arguments.contains("-S"))
-        XCTAssertTrue(arguments.contains("ControlMaster=no"))
-        XCTAssertTrue(arguments.contains("ControlPath=/tmp/cmux-ssh-%C"))
-        XCTAssertTrue(arguments.contains("-O"))
-        XCTAssertTrue(arguments.contains("forward"))
-        XCTAssertTrue(arguments.contains("-R"))
-        XCTAssertTrue(arguments.contains("127.0.0.1:64007:127.0.0.1:54321"))
-        XCTAssertTrue(arguments.contains("cmux-macmini"))
-    }
-
-    func testReverseRelayControlMasterArgumentsReuseWhitespaceConfiguredControlSocket() throws {
-        let configuration = WorkspaceRemoteConfiguration(
-            destination: "cmux-macmini",
-            port: 2222,
-            identityFile: "/Users/test/.ssh/id_ed25519",
-            sshOptions: [
-                "ControlMaster auto",
-                "ControlPersist 600",
-                "ControlPath /tmp/cmux-ssh-%C",
-                "StrictHostKeyChecking accept-new",
-            ],
-            localProxyPort: nil,
-            relayPort: 64033,
-            relayID: nil,
-            relayToken: nil,
-            localSocketPath: nil,
-            terminalStartupCommand: "ssh cmux-macmini"
-        )
-
-        let arguments = try XCTUnwrap(
-            WorkspaceRemoteSSHBatchCommandBuilder.reverseRelayControlMasterArguments(
-                configuration: configuration,
-                controlCommand: "forward",
-                forwardSpec: "127.0.0.1:64033:127.0.0.1:54321"
-            )
-        )
-
-        XCTAssertFalse(arguments.contains("-S"))
-        XCTAssertTrue(arguments.contains("ControlMaster=no"))
-        XCTAssertTrue(arguments.contains(where: { $0 == "ControlPath /tmp/cmux-ssh-%C" || $0 == "ControlPath=/tmp/cmux-ssh-%C" }))
-        XCTAssertTrue(arguments.contains("-O"))
-        XCTAssertTrue(arguments.contains("forward"))
-    }
-
     func testDetectedSSHSessionBracketsIPv6LiteralSCPDestination() {
         let session = DetectedSSHSession(
             destination: "lawrence@2001:db8::1",
@@ -1665,47 +498,48 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
             destination: "cmux-macmini",
             port: nil,
             identityFile: nil,
-            sshOptions: [],
-            localProxyPort: nil,
-            relayPort: 64007,
-            relayID: String(repeating: "a", count: 16),
-            relayToken: String(repeating: "b", count: 64),
-            localSocketPath: "/tmp/cmux-debug-test.sock",
-            terminalStartupCommand: "ssh cmux-macmini"
+            sshOptions: []
         )
 
         workspace.configureRemoteConnection(config, autoConnect: false)
         XCTAssertEqual(workspace.activeRemoteTerminalSessionCount, 1)
 
-        let proxyError = "Remote proxy to cmux-macmini unavailable: Failed to start local daemon proxy: daemon RPC timeout waiting for hello response (retry in 3s)"
-        workspace.applyRemoteConnectionStateUpdate(.error, detail: proxyError, target: "cmux-macmini")
-
+        // Bring the PRIMARY terminal transport up. The migrated invariant is
+        // structural: the transport is the only thing that can move
+        // `remoteConnectionState`; the browser proxy is a derived capability.
+        workspace.acceptTerminalTransportState(.connected)
         XCTAssertEqual(workspace.remoteConnectionState, .connected)
-        XCTAssertEqual(workspace.remoteConnectionDetail, proxyError)
-        XCTAssertEqual(
-            workspace.statusEntries["remote.error"]?.value,
-            "Remote proxy unavailable (cmux-macmini): \(proxyError)"
+
+        // A proxy-only degradation arrives as a `.browserProxy` capability
+        // event (the old localized-substring `applyRemoteConnectionStateUpdate(
+        // .error, …)` proxy-only guess is gone). It must NOT demote the
+        // transport, and the proxy sub-payload must report the error.
+        workspace.dispatchRemoteForTesting(
+            .capability(.browserProxy, RemoteCapabilityHealth(state: .degraded, reason: .channelClosed))
         )
-        XCTAssertEqual(workspace.logEntries.last?.source, "remote-proxy")
+
+        XCTAssertEqual(workspace.remoteConnectionState, .connected, "a proxy degradation must never demote the transport")
+        XCTAssertNil(workspace.statusEntries["remote.error"], "a capability degradation is not a transport SSH error")
         XCTAssertEqual(workspace.remoteStatusPayload()["connected"] as? Bool, true)
         XCTAssertEqual(
             ((workspace.remoteStatusPayload()["proxy"] as? [String: Any])?["state"] as? String),
             "error"
         )
 
-        workspace.applyRemoteConnectionStateUpdate(.connecting, detail: "Connecting to cmux-macmini", target: "cmux-macmini")
-
+        // A transport "connecting" blip that the proxy capability happens to
+        // observe still cannot demote the connected transport, because only a
+        // `.transport` event reaches the transport slot.
+        workspace.dispatchRemoteForTesting(
+            .capability(.browserProxy, RemoteCapabilityHealth(state: .connecting))
+        )
         XCTAssertEqual(workspace.remoteConnectionState, .connected)
         XCTAssertEqual(
-            workspace.statusEntries["remote.error"]?.value,
-            "Remote proxy unavailable (cmux-macmini): \(proxyError)"
+            ((workspace.remoteStatusPayload()["proxy"] as? [String: Any])?["state"] as? String),
+            "connecting"
         )
 
-        workspace.applyRemoteConnectionStateUpdate(
-            .connected,
-            detail: "Connected to cmux-macmini via shared local proxy 127.0.0.1:9999",
-            target: "cmux-macmini"
-        )
+        // Proxy recovery clears the degraded state; the transport never moved.
+        workspace.dispatchRemoteForTesting(.capability(.browserProxy, .unavailable))
 
         XCTAssertEqual(workspace.remoteConnectionState, .connected)
         XCTAssertNil(workspace.statusEntries["remote.error"])
@@ -1713,6 +547,116 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
             ((workspace.remoteStatusPayload()["proxy"] as? [String: Any])?["state"] as? String),
             "unavailable"
         )
+    }
+
+    @MainActor
+    func testLateTerminalStateAfterDisconnectDoesNotResurrectTransport() {
+        // FINDING D: a per-surface `on_remote_state` callback can fire AFTER the
+        // user explicitly disconnected (the pooled `Entry` flushes a final
+        // `.reconnecting`/`.disconnected` while the surface is being torn down).
+        // Without the guard in `acceptTerminalTransportState`, that stale
+        // callback re-drives `.transport` and flips a freshly-disconnected
+        // workspace back to `.reconnecting`. The guard (`remoteConfiguration !=
+        // nil, sshIntegration != nil`) makes any post-disconnect terminal-state
+        // callback a no-op; `disconnectRemoteConnection` nils `sshIntegration`,
+        // so this fires for every late callback.
+        let workspace = Workspace()
+        let config = WorkspaceRemoteConfiguration(
+            destination: "cmux-macmini",
+            port: nil,
+            identityFile: nil,
+            sshOptions: []
+        )
+
+        workspace.configureRemoteConnection(config, autoConnect: false)
+        // Bring the terminal transport up so the latch is live and the workspace
+        // is genuinely `.connected` (the live-connection precondition the guard
+        // protects on disconnect).
+        workspace.acceptTerminalTransportState(.connected)
+        XCTAssertEqual(workspace.remoteConnectionState, .connected)
+
+        // The user explicitly disconnects.
+        workspace.disconnectRemoteConnection()
+        XCTAssertEqual(workspace.remoteConnectionState, .disconnected)
+
+        // A late per-surface callback arrives from the surface being torn down.
+        // It must NOT resurrect the transport.
+        workspace.acceptTerminalTransportState(
+            .disconnected(.init(attemptsMade: 1, reason: .exhausted))
+        )
+        XCTAssertEqual(
+            workspace.remoteConnectionState, .disconnected,
+            "a late terminal-state callback after disconnect must not flip transport back to reconnecting")
+
+        // A late `.reconnecting` flush is the more dangerous variant; it must
+        // also be ignored.
+        workspace.acceptTerminalTransportState(
+            .reconnecting(.init(attempt: 1, maxAttempts: .max, elapsed: 0, nextRetry: nil))
+        )
+        XCTAssertEqual(
+            workspace.remoteConnectionState, .disconnected,
+            "a late terminal-state reconnecting flush after disconnect must not resurrect transport")
+    }
+
+    @MainActor
+    func testClosingLastRemoteTerminalReArmsBootstrapTransportSource() {
+        // FINDING F: the terminal-transport latch is only re-armed in
+        // (dis)connect today, so once every remote terminal surface closes — a
+        // browser-only remote workspace keeps the connection up after the last
+        // shell is gone — the latch stayed `true` and the C-API bootstrap source
+        // was permanently barred from driving `RemoteHealth.transport`, so
+        // transport could get stuck. Closing the last remote terminal surface
+        // must re-arm the latch so the bootstrap (C-API) source drives transport
+        // again. We observe this through the latch-gated bootstrap path
+        // (`driveBootstrapTransportForTesting`, which mirrors
+        // `handleSSHConnectionState`'s gate), not the private latch boolean.
+        let workspace = Workspace()
+        let config = WorkspaceRemoteConfiguration(
+            destination: "cmux-macmini",
+            port: nil,
+            identityFile: nil,
+            sshOptions: []
+        )
+
+        workspace.configureRemoteConnection(config, autoConnect: false)
+        let panelID = try? XCTUnwrap(workspace.focusedTerminalPanel?.id)
+        let surfaceID = panelID ?? UUID()
+        XCTAssertEqual(workspace.activeRemoteTerminalSessionCount, 1)
+
+        // A terminal surface reports its transport health: the latch closes and
+        // the bootstrap (C-API) source is barred from driving transport.
+        workspace.acceptTerminalTransportState(.connected)
+        XCTAssertEqual(workspace.remoteConnectionState, .connected)
+        XCTAssertFalse(
+            workspace.driveBootstrapTransportForTesting(.connecting),
+            "while a terminal owns the transport, the bootstrap source must not drive it")
+        XCTAssertEqual(
+            workspace.remoteConnectionState, .connected,
+            "the barred bootstrap source must not have moved transport")
+
+        // Drive the workspace into a transient `.reconnecting` so closing the
+        // last terminal does not trigger the no-browser-panel auto-demotion
+        // (which only disconnects from a settled state), keeping the connection
+        // alive — the browser-only-after-last-shell scenario.
+        workspace.acceptTerminalTransportState(
+            .reconnecting(.init(attempt: 1, maxAttempts: .max, elapsed: 0, nextRetry: nil))
+        )
+        XCTAssertEqual(workspace.remoteConnectionState, .reconnecting)
+
+        // Close the last remote terminal surface. This empties the active set
+        // and (FINDING F) re-arms the latch.
+        workspace.markRemoteTerminalSessionEnded(surfaceId: surfaceID, relayPort: nil)
+        XCTAssertEqual(workspace.activeRemoteTerminalSessionCount, 0)
+
+        // With no live terminal sourcing transport, the bootstrap (C-API) source
+        // can drive transport again. Before the fix the latch stayed closed and
+        // this would return false, leaving transport stuck at `.reconnecting`.
+        XCTAssertTrue(
+            workspace.driveBootstrapTransportForTesting(.connected),
+            "closing the last remote terminal must re-arm the latch so the bootstrap source drives transport")
+        XCTAssertEqual(
+            workspace.remoteConnectionState, .connected,
+            "the re-armed bootstrap source drove transport back to connected")
     }
 }
 

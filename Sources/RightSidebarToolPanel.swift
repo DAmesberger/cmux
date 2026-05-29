@@ -152,9 +152,7 @@ final class RightSidebarToolPanel: Panel, ObservableObject {
         workspaceObservationCancellable = Publishers.MergeMany(
             workspace.$currentDirectory.map { _ in () }.eraseToAnyPublisher(),
             workspace.$remoteConfiguration.map { _ in () }.eraseToAnyPublisher(),
-            workspace.$remoteConnectionState.map { _ in () }.eraseToAnyPublisher(),
-            workspace.$remoteConnectionDetail.map { _ in () }.eraseToAnyPublisher(),
-            workspace.$remoteDaemonStatus.map { _ in () }.eraseToAnyPublisher()
+            workspace.$remoteHealth.map { _ in () }.eraseToAnyPublisher()
         )
         .sink { [weak self, weak workspace] _ in
             Task { @MainActor in
@@ -172,7 +170,7 @@ final class RightSidebarToolPanel: Panel, ObservableObject {
                 store.applyWorkspaceRoot(.none)
                 return
             }
-            let unavailableDetail = workspace.remoteConnectionDetail ?? workspace.remoteDaemonStatus.detail
+            let unavailableDetail = workspace.remoteConnectionDetail
             store.applyWorkspaceRoot(
                 .remoteSSH(
                     workspaceId: workspace.id,

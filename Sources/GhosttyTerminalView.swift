@@ -4886,6 +4886,15 @@ final class TerminalSurface: Identifiable, ObservableObject {
     /// so the workspace can promote the daemon group_id to subsequent
     /// surfaces. Invoked on the main actor.
     var remoteOpenedHandler: ((UUID, UUID) -> Void)?
+    /// Closure invoked when libghostty's per-surface `on_remote_state` C
+    /// callback fires — i.e. when THIS surface's `Remote` termio backend
+    /// transitions connection state on its own pooled SSH `Entry` (the
+    /// same connection the terminal data plane rides), distinct from the
+    /// separate browser-proxy C-API connection. Set by
+    /// `Workspace.bindRemoteStateCallback(for:)` so the workspace can feed
+    /// `RemoteHealth.transport` from the terminal's own transport health.
+    /// Invoked on the main actor.
+    var remoteStateHandler: ((Ghostty.ConnectionState) -> Void)?
     var requestedWorkingDirectory: String? { workingDirectory }
     let focusPlacement: TerminalSurfaceFocusPlacement
     private var additionalEnvironment: [String: String]
@@ -5957,6 +5966,26 @@ final class TerminalSurface: Identifiable, ObservableObject {
             let ctx = unmanaged.takeUnretainedValue()
             DispatchQueue.main.async {
                 ctx.terminalSurface?.remoteOpenedHandler?(groupUUID, surfaceUUID)
+            }
+        }
+
+        // Install the libghostty `on_remote_state` C callback. Fires
+        // whenever THIS surface's `Remote` backend transitions connection
+        // state on its own pooled SSH `Entry`. The `state` pointer is only
+        // valid for the duration of the callback, so we decode it into the
+        // value-type `Ghostty.ConnectionState` synchronously on the C
+        // worker thread (cheap, no allocations beyond the enum payload),
+        // then hop to main to feed the workspace-installed handler. This is
+        // the per-surface transport-health signal that drives
+        // `RemoteHealth.transport` — the separate browser-proxy C-API
+        // connection no longer moves it once a terminal reports.
+        surfaceConfig.on_remote_state = { userdata, statePtr in
+            guard let userdata, let statePtr else { return }
+            let connState = Ghostty.ConnectionState.decode(surfaceState: statePtr.pointee)
+            let unmanaged = Unmanaged<GhosttySurfaceCallbackContext>.fromOpaque(userdata)
+            let ctx = unmanaged.takeUnretainedValue()
+            DispatchQueue.main.async {
+                ctx.terminalSurface?.remoteStateHandler?(connState)
             }
         }
 
@@ -11903,8 +11932,9 @@ final class GhosttySurfaceScrollView: NSView {
     /// `self` (`GhosttySurfaceScrollView`) so its z-order is above
     /// the terminal contents.
     ///
-    /// Passing `nil` (or a state of `.connected` with no provisioning)
-    /// unmounts the overlay.
+    /// Passing `nil` unmounts the overlay. The decision of whether to
+    /// render at all (and what) is made by `RemoteOverlayPolicy` upstream:
+    /// a non-nil payload always renders, a nil payload always unmounts.
     func setReconnectOverlay(_ payload: TerminalPanelRemoteOverlay?) {
         if !Thread.isMainThread {
             DispatchQueue.main.async { [weak self] in
@@ -11913,21 +11943,7 @@ final class GhosttySurfaceScrollView: NSView {
             return
         }
 
-        let shouldShow: Bool = {
-            guard let payload else { return false }
-            // Show on anything but a fully-healthy connected state.
-            switch payload.state {
-            case .connected:
-                // Provisioning can still be running mid-connect; show
-                // the upload progress card even though state is
-                // technically connected for the SSH transport.
-                return payload.provisioning != nil
-            case .connecting, .reconnecting, .error, .disconnected:
-                return true
-            }
-        }()
-
-        guard shouldShow, let payload else {
+        guard let payload else {
             if reconnectOverlayHostingView != nil {
                 reconnectOverlayHostingView?.removeFromSuperview()
                 reconnectOverlayHostingView = nil
@@ -11945,13 +11961,7 @@ final class GhosttySurfaceScrollView: NSView {
             return
         }
 
-        let rootView = RemoteReconnectOverlay(
-            state: payload.state,
-            target: payload.target,
-            detail: payload.detail,
-            provisioning: payload.provisioning,
-            reconnect: payload.reconnect
-        )
+        let rootView = RemoteReconnectOverlay(presentation: payload.presentation)
 
         if let existing = reconnectOverlayHostingView {
             existing.rootView = rootView

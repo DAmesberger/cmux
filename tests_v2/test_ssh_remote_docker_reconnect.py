@@ -489,13 +489,15 @@ def main() -> int:
             _must(bool(workspace_id), f"cmux ssh output missing workspace_id: {payload}")
 
             first_status = _wait_remote_connected(client, workspace_id, timeout=45.0)
-            first_daemon = ((first_status.get("remote") or {}).get("daemon") or {})
-            _must(str(first_daemon.get("state") or "") == "ready", f"daemon should be ready after first connect: {first_status}")
-            first_capabilities = {str(item) for item in (first_daemon.get("capabilities") or [])}
-            _must("proxy.stream" in first_capabilities, f"daemon should advertise proxy.stream: {first_status}")
-            _must("proxy.socks5" in first_capabilities, f"daemon should advertise proxy.socks5: {first_status}")
-            _must("proxy.http_connect" in first_capabilities, f"daemon should advertise proxy.http_connect: {first_status}")
+            # The daemon `capabilities` advertisement was folded into the
+            # derived `proxy` block: a `ready` proxy with its `schemes` is the
+            # migrated equivalent of the old `daemon.state == "ready"` +
+            # `proxy.stream`/`proxy.socks5`/`proxy.http_connect` capabilities.
             first_proxy = ((first_status.get("remote") or {}).get("proxy") or {})
+            _must(str(first_proxy.get("state") or "") == "ready", f"proxy should be ready after first connect: {first_status}")
+            first_schemes = {str(item) for item in (first_proxy.get("schemes") or [])}
+            _must("socks5" in first_schemes, f"proxy should advertise socks5: {first_status}")
+            _must("http_connect" in first_schemes, f"proxy should advertise http_connect: {first_status}")
             first_proxy_port = first_proxy.get("port")
             if isinstance(first_proxy_port, str) and first_proxy_port.isdigit():
                 first_proxy_port = int(first_proxy_port)
@@ -541,13 +543,13 @@ def main() -> int:
             container_running = True
 
             second_status = _wait_remote_connected(client, workspace_id, timeout=60.0)
-            second_daemon = ((second_status.get("remote") or {}).get("daemon") or {})
-            _must(str(second_daemon.get("state") or "") == "ready", f"daemon should be ready after reconnect: {second_status}")
-            second_capabilities = {str(item) for item in (second_daemon.get("capabilities") or [])}
-            _must("proxy.stream" in second_capabilities, f"daemon should advertise proxy.stream after reconnect: {second_status}")
-            _must("proxy.socks5" in second_capabilities, f"daemon should advertise proxy.socks5 after reconnect: {second_status}")
-            _must("proxy.http_connect" in second_capabilities, f"daemon should advertise proxy.http_connect after reconnect: {second_status}")
+            # Same migration as the first-connect block: a ready proxy with its
+            # advertised schemes replaces the removed daemon capability list.
             second_proxy = ((second_status.get("remote") or {}).get("proxy") or {})
+            _must(str(second_proxy.get("state") or "") == "ready", f"proxy should be ready after reconnect: {second_status}")
+            second_schemes = {str(item) for item in (second_proxy.get("schemes") or [])}
+            _must("socks5" in second_schemes, f"proxy should advertise socks5 after reconnect: {second_status}")
+            _must("http_connect" in second_schemes, f"proxy should advertise http_connect after reconnect: {second_status}")
             second_proxy_port = second_proxy.get("port")
             if isinstance(second_proxy_port, str) and second_proxy_port.isdigit():
                 second_proxy_port = int(second_proxy_port)

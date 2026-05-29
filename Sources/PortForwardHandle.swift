@@ -11,6 +11,21 @@ struct PortForwardID: Hashable, Codable {
     init() { self.id = UUID() }
 }
 
+// MARK: - PortForwardError
+
+/// Errors surfaced when opening a port forward.
+enum PortForwardError: Swift.Error, Equatable {
+    /// A second concurrent forward was requested. FINDING A: `tryHandle`
+    /// cannot match a daemon-originated `tcp_accepted` accept to its own
+    /// listener (the daemon's `parent_listener_uuid` is not returned in the
+    /// port_listener service_ack), so with the deterministic
+    /// first-claim-wins `InboundChannelRouter` the first-registered forward
+    /// would claim ALL accepts for ALL forwards. Until the listener UUID is
+    /// plumbed through the ack, only one active forward per connection is
+    /// supported.
+    case multipleForwardsUnsupported
+}
+
 // MARK: - TCPAcceptedService
 
 /// Local-only `ChannelService` conformance for daemon-originated
@@ -36,9 +51,12 @@ private struct TCPAcceptedService: Ghostty.ChannelService {
 /// from each accepted inbound TCP stream.
 ///
 /// One `PortForwardHandle` is created per "cmux forward-port <port>" request.
-/// It opens a `PortListenerService` channel on the remote end and subscribes
-/// to the connection's `inboundChannels` stream so it can match and accept the
-/// `tcp_accepted` sub-channels that arrive for each upstream connection.
+/// It opens a `PortListenerService` channel on the remote end. The
+/// `tcp_accepted` sub-channels that arrive for each upstream connection are
+/// delivered through the per-connection `InboundChannelRouter` (owned by
+/// `WorkspaceSSHIntegration`), which offers each daemon-originated inbound to
+/// this handle's `tryHandle` rather than each handle running its own
+/// `inboundChannels` loop.
 ///
 /// Each accepted channel is bridged to a local `NWConnection` on 127.0.0.1
 /// that callers (or the CLI) can connect to.
@@ -47,7 +65,7 @@ private struct TCPAcceptedService: Ghostty.ChannelService {
 /// NWConnection callbacks are dispatched through a private serial queue and
 /// hop back to `MainActor` before mutating shared state.
 @MainActor
-final class PortForwardHandle {
+final class PortForwardHandle: InboundChannelHandler {
 
     // MARK: Public surface
 
@@ -93,76 +111,76 @@ final class PortForwardHandle {
             Ghostty.PortListenerService(bindHost: bindHost, port: port)
         )
 
-        // Subscribe to daemon-originated channels on the connection.
-        // Each `port_listener` accept arrives as an InboundChannel with:
-        //   serviceID = 255 (GHOSTTY_CHANNEL_SERVICE_CUSTOM — the C-API
-        //                   maps the daemon-internal tcp_accepted id 6 to custom)
-        //   params = [16 bytes parent_listener_uuid][6 or 18 bytes peer_addr]
-        //
-        // We match the parent UUID against our own listener handle to avoid
-        // stealing accepts that belong to other PortForwardHandles.
-        let listenerCh = self.listenerChannel
-        Task { [weak self] in
-            guard let self else { return }
-            for await inbound in connection.inboundChannels {
-                await MainActor.run {
-                    self.handleInbound(inbound, listenerChannel: listenerCh)
-                }
-            }
-        }
+        // Inbound `tcp_accepted` channels for this forward are delivered by the
+        // per-connection `InboundChannelRouter` (owned by
+        // `WorkspaceSSHIntegration`) via `tryHandle`, NOT by a per-handle
+        // `for await` loop. A single shared loop guarantees no inbound is split
+        // between competing consumers (port forwards vs. the cmux_control
+        // reverse channel). The owner registers/unregisters this handle.
     }
 
     // MARK: Inbound channel handling
 
-    private func handleInbound(
-        _ inbound: Ghostty.InboundChannel,
-        listenerChannel: Ghostty.SSHChannel<Ghostty.PortListenerService>
-    ) {
+    /// Router entry point: offer one daemon-originated inbound channel to this
+    /// port forward. Claims `tcp_accepted` accepts (custom service id 255 whose
+    /// params start with a 16-byte parent_listener_uuid, never the 8-byte
+    /// `cmuxctl1` control tag). Returns `.passed` for anything else so the
+    /// router can offer it to the next handler (e.g. the control channel).
+    func tryHandle(_ inbound: Ghostty.InboundChannel) -> InboundChannelDisposition {
         guard !isClosed else {
-            inbound.reject()
-            return
+            return .passed  // closed: let another live handler claim it
         }
 
-        // Only process daemon-originated custom channels (tcp_accepted).
+        // Only daemon-originated custom channels (tcp_accepted) can be ours.
         let customID = UInt8(GHOSTTY_CHANNEL_SERVICE_CUSTOM.rawValue)
         guard inbound.serviceID == customID else {
-            return  // not ours; leave for other subscribers
+            return .passed
         }
 
-        // Parse the 16-byte parent_listener_uuid from the params prefix.
-        // Layout per port_listener.zig:
+        // The cmux_control reverse channel also arrives as a custom channel,
+        // tagged with the 8-byte ASCII "cmuxctl1" discriminator. Leave those
+        // for the control-channel handler.
+        if inbound.params.count >= RemoteControlChannel.paramTag.count,
+           inbound.params.prefix(RemoteControlChannel.paramTag.count) == RemoteControlChannel.paramTag {
+            return .passed
+        }
+
+        // A tcp_accepted accept's params are:
         //   [16]  parent_listener_uuid
         //   [N]   peer_addr (6 bytes AF_INET or 18 bytes AF_INET6)
         guard inbound.params.count >= 16 else {
-            inbound.reject()
-            return
+            return .passed  // too short for a tcp_accepted accept; not ours
         }
 
         let parentUUIDBytes = inbound.params.prefix(16)
         let parentUUID = uuidFromBytes(parentUUIDBytes)
 
-        // Match against our listener channel's handle. The listener UUID is
-        // available via the service_ack bytes in the `opened` event. As a
-        // simpler per-handle heuristic while the service_ack parsing is
-        // deferred, we accept ALL custom inbound channels when there is only
-        // one active PortForwardHandle on the connection. When multiple
-        // handles are active, callers should filter by parentUUID
-        // (passed through `opened` service_ack; see note in design doc).
-        //
-        // For now: accept if the channel appears to be a tcp_accepted channel
-        // (16+ byte params with a parseable UUID). The workspace-level
-        // inboundChannels consumer will route unaccepted channels to other
-        // listeners, so false-accepting a foreign channel is the only risk —
-        // which is mitigated once service_ack UUID filtering is plumbed.
-        _ = parentUUID  // used for future UUID filtering
+        // FINDING A: ideally we would claim ONLY accepts whose 16-byte
+        // `parent_listener_uuid` matches THIS handle's own listener. But the
+        // daemon generates that UUID (`port_listener.zig`
+        // `state.uuid = shared.generateUuid()`) and does NOT return it in the
+        // port_listener opened service_ack — the ack carries only the bound
+        // host+port (see `port_listener.zig` "Opened service_ack layout"). So
+        // the client cannot learn its own listener UUID through the current
+        // wire protocol, and a real `parentUUID == ourListenerUUID` match is
+        // not implementable without a ghostty wire-format change. Instead,
+        // `WorkspaceSSHIntegration.openPortForward` enforces a single active
+        // forward per connection (it throws `multipleForwardsUnsupported` on a
+        // 2nd), which makes "accept everything" correct: there is exactly one
+        // live forward, so every tcp_accepted accept that reaches here is ours.
+        // The router only offers an inbound to the next handler when this one
+        // `.passed`s, so a single forward never starves the control channel.
+        _ = parentUUID  // matched implicitly via the single-forward precondition
 
         guard let acceptedChannel = inbound.accept(using: TCPAcceptedService()) else {
-            // Service ID mismatch or already claimed — skip silently.
-            return
+            // Service ID mismatch or already claimed — we still consumed the
+            // offer (the inbound's one-shot claim is now spent).
+            return .claimed
         }
 
         // Bridge the accepted channel to a local NWConnection.
         bridgeToLocal(acceptedChannel)
+        return .claimed
     }
 
     // MARK: Local TCP bridge

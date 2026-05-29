@@ -140,13 +140,35 @@ struct WorkspaceRemoteConfiguration: Equatable {
         return "\(destination):\(port)"
     }
 
+    /// The `ProxyJump` chain extracted from `sshOptions`, or "" when none is
+    /// configured. This is the SAME value `ghosttyConfig()` hands to the
+    /// C-API proxy connection as `Config.jump`, so both the terminal surface
+    /// (which encodes it into `surfaceSSHTarget` below) and the proxy path
+    /// resolve identical libssh2 pool keys
+    /// (`SshConnectionManager.makeKey` = "target|jump").
+    var proxyJump: String {
+        sshOptions.compactMap { option -> String? in
+            WorkspaceRemoteSSHOptionFilter.optionValue("ProxyJump", in: option)
+        }.first ?? ""
+    }
+
+    /// The `ssh_target` string handed to a remote terminal surface. When a
+    /// `ProxyJump` is configured we encode it using ghostty's ` via ` syntax
+    /// (`src/session/shared.zig parseSshTarget`) so the terminal path keys on
+    /// `makeKey(target, jump)` — exactly the key the C-API proxy connection
+    /// uses — and the two share ONE pooled libssh2 Entry. Without the jump we
+    /// fall back to the bare `displayTarget` (key = "target").
+    var surfaceSSHTarget: String {
+        let jump = proxyJump
+        guard !jump.isEmpty else { return displayTarget }
+        return "\(displayTarget) via \(jump)"
+    }
+
     func ghosttyConfig() -> Ghostty.SSHConnection.Config {
         var target = destination
         if let port { target += ":\(port)" }
 
-        let jump = sshOptions.compactMap { option -> String? in
-            WorkspaceRemoteSSHOptionFilter.optionValue("ProxyJump", in: option)
-        }.first ?? ""
+        let jump = proxyJump
 
         let resolvedIdentity: String
         if let explicit = WorkspaceRemoteSSHOptionFilter.normalizedIdentityPath(identityFile) {

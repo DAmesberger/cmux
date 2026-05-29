@@ -286,6 +286,10 @@
 		C7E001000000000000000002 /* RemoteSessionSyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7E001000000000000000001 /* RemoteSessionSyncCoordinator.swift */; };
 		C7E002000000000000000002 /* WorkspaceSSHIntegration.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7E002000000000000000001 /* WorkspaceSSHIntegration.swift */; };
 		C7E003000000000000000002 /* RemoteProxyTunnel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7E003000000000000000001 /* RemoteProxyTunnel.swift */; };
+		C7E003010000000000000002 /* RemoteControlChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7E003010000000000000001 /* RemoteControlChannel.swift */; };
+		C7E003020000000000000002 /* InboundChannelRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7E003020000000000000001 /* InboundChannelRouter.swift */; };
+		C7E003000000000000000004 /* RemoteHealth.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7E003000000000000000003 /* RemoteHealth.swift */; };
+		C7E003000000000000000006 /* RemoteOverlayPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7E003000000000000000005 /* RemoteOverlayPolicy.swift */; };
 		C7E004000000000000000002 /* SSHActionNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7E004000000000000000001 /* SSHActionNotifications.swift */; };
 		C7E005000000000000000002 /* SSHConfigParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7E005000000000000000001 /* SSHConfigParser.swift */; };
 		C7E006000000000000000002 /* SSHConnectSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7E006000000000000000001 /* SSHConnectSheet.swift */; };
@@ -474,6 +478,7 @@
 			725746692D9647948561044D /* AppDelegateBareSpaceShortcutRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17FCD4CC61D54A2F8F2F463D /* AppDelegateBareSpaceShortcutRoutingTests.swift */; };
 		F6001000A1B2C3D4E5F60718 /* ShortcutUnbindingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6001001A1B2C3D4E5F60718 /* ShortcutUnbindingTests.swift */; };
 		F6100000A1B2C3D4E5F60718 /* WorkspaceRemoteConnectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6100001A1B2C3D4E5F60718 /* WorkspaceRemoteConnectionTests.swift */; };
+		F6100003A1B2C3D4E5F60718 /* RemoteHealthReducerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6100002A1B2C3D4E5F60718 /* RemoteHealthReducerTests.swift */; };
 		F6355600A1B2C3D4E5F60718 /* SSHStartupSignalLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6355601A1B2C3D4E5F60718 /* SSHStartupSignalLifecycleTests.swift */; };
 		F6120000A1B2C3D4E5F60718 /* WorkspaceSSHFishShellTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6120001A1B2C3D4E5F60718 /* WorkspaceSSHFishShellTests.swift */; };
 		F7000000A1B2C3D4E5F60718 /* WorkspaceContentViewVisibilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7000001A1B2C3D4E5F60718 /* WorkspaceContentViewVisibilityTests.swift */; };
@@ -867,6 +872,10 @@
 		C7E001000000000000000001 /* RemoteSessionSyncCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSessionSyncCoordinator.swift; sourceTree = "<group>"; };
 		C7E002000000000000000001 /* WorkspaceSSHIntegration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSSHIntegration.swift; sourceTree = "<group>"; };
 		C7E003000000000000000001 /* RemoteProxyTunnel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteProxyTunnel.swift; sourceTree = "<group>"; };
+		C7E003010000000000000001 /* RemoteControlChannel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteControlChannel.swift; sourceTree = "<group>"; };
+		C7E003020000000000000001 /* InboundChannelRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboundChannelRouter.swift; sourceTree = "<group>"; };
+		C7E003000000000000000003 /* RemoteHealth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteHealth.swift; sourceTree = "<group>"; };
+		C7E003000000000000000005 /* RemoteOverlayPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteOverlayPolicy.swift; sourceTree = "<group>"; };
 		C7E004000000000000000001 /* SSHActionNotifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHActionNotifications.swift; sourceTree = "<group>"; };
 		C7E005000000000000000001 /* SSHConfigParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHConfigParser.swift; sourceTree = "<group>"; };
 		C7E006000000000000000001 /* SSHConnectSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHConnectSheet.swift; sourceTree = "<group>"; };
@@ -1045,6 +1054,7 @@
 		E3309A0A /* AppDelegateEqualizeSplitsShortcutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegateEqualizeSplitsShortcutTests.swift; sourceTree = "<group>"; };
 		F6001001A1B2C3D4E5F60718 /* ShortcutUnbindingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutUnbindingTests.swift; sourceTree = "<group>"; };
 		F6100001A1B2C3D4E5F60718 /* WorkspaceRemoteConnectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceRemoteConnectionTests.swift; sourceTree = "<group>"; };
+		F6100002A1B2C3D4E5F60718 /* RemoteHealthReducerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteHealthReducerTests.swift; sourceTree = "<group>"; };
 		F6355601A1B2C3D4E5F60718 /* SSHStartupSignalLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHStartupSignalLifecycleTests.swift; sourceTree = "<group>"; };
 		F6120001A1B2C3D4E5F60718 /* WorkspaceSSHFishShellTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSSHFishShellTests.swift; sourceTree = "<group>"; };
 		F7000001A1B2C3D4E5F60718 /* WorkspaceContentViewVisibilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceContentViewVisibilityTests.swift; sourceTree = "<group>"; };
@@ -1341,6 +1351,10 @@ A7SSH0000000000000000002 /* CallbackTrampoline.swift */,
 				A7SSH0000000000000000008 /* ConnectionState.swift */,
 				A7SSH0000000000000000010 /* Service.swift */,
 					C7E003000000000000000001 /* RemoteProxyTunnel.swift */,
+					C7E003010000000000000001 /* RemoteControlChannel.swift */,
+					C7E003020000000000000001 /* InboundChannelRouter.swift */,
+					C7E003000000000000000003 /* RemoteHealth.swift */,
+					C7E003000000000000000005 /* RemoteOverlayPolicy.swift */,
 					C7E004000000000000000001 /* SSHActionNotifications.swift */,
 					C7E005000000000000000001 /* SSHConfigParser.swift */,
 					C7E006000000000000000001 /* SSHConnectSheet.swift */,
@@ -1616,6 +1630,7 @@ A7SSH0000000000000000002 /* CallbackTrampoline.swift */,
 				E3309A0A /* AppDelegateEqualizeSplitsShortcutTests.swift */,
 				F6001001A1B2C3D4E5F60718 /* ShortcutUnbindingTests.swift */,
 				F6100001A1B2C3D4E5F60718 /* WorkspaceRemoteConnectionTests.swift */,
+				F6100002A1B2C3D4E5F60718 /* RemoteHealthReducerTests.swift */,
 				F6355601A1B2C3D4E5F60718 /* SSHStartupSignalLifecycleTests.swift */,
 				F6120001A1B2C3D4E5F60718 /* WorkspaceSSHFishShellTests.swift */,
 				F7000001A1B2C3D4E5F60718 /* WorkspaceContentViewVisibilityTests.swift */,
@@ -2099,6 +2114,10 @@ A7SSH0000000000000000001 /* CallbackTrampoline.swift in Sources */,
 				A7SSH0000000000000000007 /* ConnectionState.swift in Sources */,
 				A7SSH0000000000000000009 /* Service.swift in Sources */,
 					C7E003000000000000000002 /* RemoteProxyTunnel.swift in Sources */,
+					C7E003010000000000000002 /* RemoteControlChannel.swift in Sources */,
+					C7E003020000000000000002 /* InboundChannelRouter.swift in Sources */,
+					C7E003000000000000000004 /* RemoteHealth.swift in Sources */,
+					C7E003000000000000000006 /* RemoteOverlayPolicy.swift in Sources */,
 					C7E004000000000000000002 /* SSHActionNotifications.swift in Sources */,
 					C7E005000000000000000002 /* SSHConfigParser.swift in Sources */,
 					C7E006000000000000000002 /* SSHConnectSheet.swift in Sources */,
@@ -2419,6 +2438,7 @@ A7SSH0000000000000000001 /* CallbackTrampoline.swift in Sources */,
 				E3309A09 /* AppDelegateEqualizeSplitsShortcutTests.swift in Sources */,
 				F6001000A1B2C3D4E5F60718 /* ShortcutUnbindingTests.swift in Sources */,
 				F6100000A1B2C3D4E5F60718 /* WorkspaceRemoteConnectionTests.swift in Sources */,
+				F6100003A1B2C3D4E5F60718 /* RemoteHealthReducerTests.swift in Sources */,
 				F6355600A1B2C3D4E5F60718 /* SSHStartupSignalLifecycleTests.swift in Sources */,
 				F6120000A1B2C3D4E5F60718 /* WorkspaceSSHFishShellTests.swift in Sources */,
 				F7000000A1B2C3D4E5F60718 /* WorkspaceContentViewVisibilityTests.swift in Sources */,

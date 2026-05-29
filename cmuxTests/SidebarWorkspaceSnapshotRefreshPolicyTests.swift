@@ -103,6 +103,7 @@ final class SidebarWorkspaceSnapshotRefreshPolicyTests: XCTestCase {
             customDescription: customDescription,
             isPinned: isPinned,
             customColorHex: customColorHex,
+            remoteSessionColorHex: nil,
             remoteWorkspaceSidebarText: nil,
             remoteConnectionStatusText: remoteConnectionStatusText,
             remoteStateHelpText: "",

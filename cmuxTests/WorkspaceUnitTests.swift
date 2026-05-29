@@ -2738,7 +2738,8 @@ final class WorkspaceCreationPlacementTests: XCTestCase {
             configTemplate: CmuxSurfaceConfigTemplate?,
             initialTerminalCommand: String?,
             initialTerminalInput: String?,
-            initialTerminalEnvironment: [String: String]
+            initialTerminalEnvironment: [String: String],
+            skipInitialSurface: Bool = false
         ) -> Workspace {
             beforeCreateWorkspace?()
             return super.makeWorkspaceForCreation(
@@ -2748,7 +2749,8 @@ final class WorkspaceCreationPlacementTests: XCTestCase {
                 configTemplate: configTemplate,
                 initialTerminalCommand: initialTerminalCommand,
                 initialTerminalInput: initialTerminalInput,
-                initialTerminalEnvironment: initialTerminalEnvironment
+                initialTerminalEnvironment: initialTerminalEnvironment,
+                skipInitialSurface: skipInitialSurface
             )
         }
     }
@@ -3037,7 +3039,8 @@ final class WorkspaceCreationConfigSanitizationTests: XCTestCase {
             configTemplate: CmuxSurfaceConfigTemplate?,
             initialTerminalCommand: String?,
             initialTerminalInput: String?,
-            initialTerminalEnvironment: [String: String]
+            initialTerminalEnvironment: [String: String],
+            skipInitialSurface: Bool = false
         ) -> Workspace {
             capturedConfigTemplate = configTemplate
             return super.makeWorkspaceForCreation(
@@ -3047,7 +3050,8 @@ final class WorkspaceCreationConfigSanitizationTests: XCTestCase {
                 configTemplate: configTemplate,
                 initialTerminalCommand: initialTerminalCommand,
                 initialTerminalInput: initialTerminalInput,
-                initialTerminalEnvironment: initialTerminalEnvironment
+                initialTerminalEnvironment: initialTerminalEnvironment,
+                skipInitialSurface: skipInitialSurface
             )
         }
     }
@@ -5171,107 +5175,6 @@ final class WorkspacePanelGitBranchTests: XCTestCase {
         )
     }
 
-    func testForkAgentConversationInRemoteWorkspaceUsesRemoteStartupCommand() throws {
-        let workspace = Workspace()
-        workspace.configureRemoteConnection(
-            WorkspaceRemoteConfiguration(
-                destination: "cmux-macmini",
-                port: nil,
-                identityFile: nil,
-                sshOptions: [],
-                localProxyPort: nil,
-                relayPort: 64000,
-                relayID: "relay-fork",
-                relayToken: String(repeating: "a", count: 64),
-                localSocketPath: "/tmp/cmux-fork-remote.sock",
-                terminalStartupCommand: "ssh cmux-macmini"
-            ),
-            autoConnect: false
-        )
-        let initialRemoteSessionCount = workspace.activeRemoteTerminalSessionCount
-        XCTAssertEqual(initialRemoteSessionCount, 1)
-        let sourcePanelId = try XCTUnwrap(workspace.focusedPanelId)
-        let snapshot = SessionRestorableAgentSnapshot(
-            kind: .codex,
-            sessionId: "019dad34-d218-7943-b81a-eddac5c87951",
-            workingDirectory: "/Users/cmux/project",
-            launchCommand: AgentLaunchCommandSnapshot(
-                launcher: "codex",
-                executablePath: "/Users/example/.bun/bin/codex",
-                arguments: ["/Users/example/.bun/bin/codex"],
-                workingDirectory: "/Users/cmux/project",
-                environment: nil,
-                capturedAt: 123,
-                source: "process"
-            )
-        )
-
-        let forkPanel = try XCTUnwrap(
-            workspace.forkAgentConversation(
-                fromPanelId: sourcePanelId,
-                snapshot: snapshot,
-                direction: .right
-            )
-        )
-
-        XCTAssertEqual(forkPanel.surface.debugInitialCommand(), "ssh cmux-macmini")
-        XCTAssertNil(forkPanel.requestedWorkingDirectory)
-        XCTAssertEqual(workspace.panelDirectories[forkPanel.id], "/Users/cmux/project")
-        XCTAssertEqual(forkPanel.surface.initialInput, snapshot.forkCommand.map { $0 + "\n" })
-        XCTAssertEqual(workspace.activeRemoteTerminalSessionCount, initialRemoteSessionCount + 1)
-    }
-
-    func testForkAgentConversationInRemoteWorkspaceUsesFallbackDirectoryInForkCommand() throws {
-        let workspace = Workspace()
-        workspace.configureRemoteConnection(
-            WorkspaceRemoteConfiguration(
-                destination: "cmux-macmini",
-                port: nil,
-                identityFile: nil,
-                sshOptions: [],
-                localProxyPort: nil,
-                relayPort: 64000,
-                relayID: "relay-fork-fallback",
-                relayToken: String(repeating: "a", count: 64),
-                localSocketPath: "/tmp/cmux-fork-fallback-remote.sock",
-                terminalStartupCommand: "ssh cmux-macmini"
-            ),
-            autoConnect: false
-        )
-        workspace.currentDirectory = "/Users/cmux/fallback repo"
-        let sourcePanelId = try XCTUnwrap(workspace.focusedPanelId)
-        let snapshot = SessionRestorableAgentSnapshot(
-            kind: .codex,
-            sessionId: "019dad34-d218-7943-b81a-eddac5c87951",
-            workingDirectory: nil,
-            launchCommand: AgentLaunchCommandSnapshot(
-                launcher: "codex",
-                executablePath: "/Users/example/.bun/bin/codex",
-                arguments: ["/Users/example/.bun/bin/codex"],
-                workingDirectory: nil,
-                environment: nil,
-                capturedAt: 123,
-                source: "process"
-            )
-        )
-
-        let forkPanel = try XCTUnwrap(
-            workspace.forkAgentConversation(
-                fromPanelId: sourcePanelId,
-                snapshot: snapshot,
-                direction: .right
-            )
-        )
-
-        XCTAssertEqual(forkPanel.surface.debugInitialCommand(), "ssh cmux-macmini")
-        XCTAssertNil(forkPanel.requestedWorkingDirectory)
-        XCTAssertEqual(workspace.panelDirectories[forkPanel.id], "/Users/cmux/fallback repo")
-        XCTAssertEqual(
-            forkPanel.surface.initialInput,
-            "cd '/Users/cmux/fallback repo' && '/Users/example/.bun/bin/codex' 'fork' '019dad34-d218-7943-b81a-eddac5c87951'\n"
-        )
-    }
-
     func testSessionIndexRemoteSplitDoesNotInjectRemoteStartupCommand() throws {
         let fileManager = FileManager.default
         let hookStateRoot = fileManager.temporaryDirectory
@@ -5294,13 +5197,7 @@ final class WorkspacePanelGitBranchTests: XCTestCase {
                 destination: "cmux-macmini",
                 port: nil,
                 identityFile: nil,
-                sshOptions: [],
-                localProxyPort: nil,
-                relayPort: 64000,
-                relayID: "relay-session-drop",
-                relayToken: String(repeating: "b", count: 64),
-                localSocketPath: "/tmp/cmux-session-drop-remote.sock",
-                terminalStartupCommand: "ssh cmux-macmini"
+                sshOptions: []
             ),
             autoConnect: false
         )
@@ -5322,112 +5219,6 @@ final class WorkspacePanelGitBranchTests: XCTestCase {
         XCTAssertNil(splitPanel.surface.debugInitialCommand())
         XCTAssertEqual(splitPanel.surface.initialInput, initialInput)
         XCTAssertEqual(workspace.activeRemoteTerminalSessionCount, initialRemoteSessionCount)
-    }
-
-    func testForkAgentWorkspaceLaunchInRemoteWorkspacePreservesRemoteContext() throws {
-        let workspace = Workspace()
-        workspace.configureRemoteConnection(
-            WorkspaceRemoteConfiguration(
-                destination: "cmux-macmini",
-                port: 2222,
-                identityFile: "/Users/example/.ssh/cmux",
-                sshOptions: ["ServerAliveInterval=30"],
-                localProxyPort: nil,
-                relayPort: 64000,
-                relayID: "relay-fork",
-                relayToken: String(repeating: "a", count: 64),
-                localSocketPath: "/tmp/cmux-fork-remote.sock",
-                terminalStartupCommand: "ssh -p 2222 -i /Users/example/.ssh/cmux -o ServerAliveInterval=30 -tt cmux-macmini"
-            ),
-            autoConnect: false
-        )
-        let sourcePanelId = try XCTUnwrap(workspace.focusedPanelId)
-        let snapshot = SessionRestorableAgentSnapshot(
-            kind: .codex,
-            sessionId: "019dad34-d218-7943-b81a-eddac5c87951",
-            workingDirectory: "/Users/cmux/project",
-            launchCommand: AgentLaunchCommandSnapshot(
-                launcher: "codex",
-                executablePath: "/Users/example/.bun/bin/codex",
-                arguments: ["/Users/example/.bun/bin/codex"],
-                workingDirectory: "/Users/cmux/project",
-                environment: nil,
-                capturedAt: 123,
-                source: "process"
-            )
-        )
-
-        let launch = try XCTUnwrap(
-            workspace.forkAgentWorkspaceLaunch(
-                fromPanelId: sourcePanelId,
-                snapshot: snapshot
-            )
-        )
-
-        XCTAssertEqual(launch.workingDirectory, "/Users/cmux/project")
-        XCTAssertNil(launch.terminalWorkingDirectory)
-        XCTAssertEqual(
-            launch.initialTerminalCommand,
-            "ssh -p 2222 -i /Users/example/.ssh/cmux -o ServerAliveInterval=30 -tt cmux-macmini"
-        )
-        XCTAssertEqual(launch.initialTerminalInput, snapshot.forkCommand.map { $0 + "\n" })
-        XCTAssertTrue(launch.autoConnectRemoteConfiguration)
-        XCTAssertEqual(launch.remoteConfiguration?.destination, "cmux-macmini")
-        XCTAssertEqual(launch.remoteConfiguration?.port, 2222)
-        XCTAssertEqual(launch.remoteConfiguration?.identityFile, "/Users/example/.ssh/cmux")
-        XCTAssertEqual(launch.remoteConfiguration?.sshOptions, ["ServerAliveInterval=30"])
-        XCTAssertNil(launch.remoteConfiguration?.relayPort)
-        XCTAssertNil(launch.remoteConfiguration?.localSocketPath)
-    }
-
-    func testForkAgentWorkspaceLaunchInRemoteWorkspaceUsesFallbackDirectoryInForkCommand() throws {
-        let workspace = Workspace()
-        workspace.configureRemoteConnection(
-            WorkspaceRemoteConfiguration(
-                destination: "cmux-macmini",
-                port: nil,
-                identityFile: nil,
-                sshOptions: [],
-                localProxyPort: nil,
-                relayPort: 64000,
-                relayID: "relay-workspace-fallback",
-                relayToken: String(repeating: "a", count: 64),
-                localSocketPath: "/tmp/cmux-workspace-fallback-remote.sock",
-                terminalStartupCommand: "ssh cmux-macmini"
-            ),
-            autoConnect: false
-        )
-        workspace.currentDirectory = "/Users/cmux/fallback repo"
-        let sourcePanelId = try XCTUnwrap(workspace.focusedPanelId)
-        let snapshot = SessionRestorableAgentSnapshot(
-            kind: .codex,
-            sessionId: "019dad34-d218-7943-b81a-eddac5c87951",
-            workingDirectory: nil,
-            launchCommand: AgentLaunchCommandSnapshot(
-                launcher: "codex",
-                executablePath: "/Users/example/.bun/bin/codex",
-                arguments: ["/Users/example/.bun/bin/codex"],
-                workingDirectory: nil,
-                environment: nil,
-                capturedAt: 123,
-                source: "process"
-            )
-        )
-
-        let launch = try XCTUnwrap(
-            workspace.forkAgentWorkspaceLaunch(
-                fromPanelId: sourcePanelId,
-                snapshot: snapshot
-            )
-        )
-
-        XCTAssertEqual(launch.workingDirectory, "/Users/cmux/fallback repo")
-        XCTAssertNil(launch.terminalWorkingDirectory)
-        XCTAssertEqual(launch.initialTerminalCommand, "ssh -tt cmux-macmini")
-        XCTAssertEqual(
-            launch.initialTerminalInput,
-            "cd '/Users/cmux/fallback repo' && '/Users/example/.bun/bin/codex' 'fork' '019dad34-d218-7943-b81a-eddac5c87951'\n"
-        )
     }
 
     func testForkAgentWorkspaceLaunchInLocalWorkspaceUsesLocalTerminalWorkingDirectory() throws {
@@ -5471,17 +5262,10 @@ final class WorkspacePanelGitBranchTests: XCTestCase {
         let workspace = Workspace()
         workspace.configureRemoteConnection(
             WorkspaceRemoteConfiguration(
-                transport: .websocket,
                 destination: "cloud-vm",
                 port: nil,
                 identityFile: nil,
-                sshOptions: [],
-                localProxyPort: 54321,
-                relayPort: nil,
-                relayID: nil,
-                relayToken: nil,
-                localSocketPath: nil,
-                terminalStartupCommand: nil
+                sshOptions: []
             ),
             autoConnect: false
         )
@@ -5543,13 +5327,7 @@ final class WorkspacePanelGitBranchTests: XCTestCase {
                 destination: "cmux-macmini",
                 port: nil,
                 identityFile: nil,
-                sshOptions: [],
-                localProxyPort: nil,
-                relayPort: 64000,
-                relayID: "relay-fork-local",
-                relayToken: String(repeating: "a", count: 64),
-                localSocketPath: "/tmp/cmux-fork-local-remote.sock",
-                terminalStartupCommand: "ssh cmux-macmini"
+                sshOptions: []
             ),
             autoConnect: false
         )
@@ -5609,66 +5387,6 @@ final class WorkspacePanelGitBranchTests: XCTestCase {
         XCTAssertFalse(launch.autoConnectRemoteConfiguration)
         XCTAssertNil(launch.remoteConfiguration)
         XCTAssertTrue(launch.initialTerminalInput.hasPrefix("/bin/zsh "))
-    }
-
-    func testForkAgentConversationInRemoteWorkspaceRejectsLocalLauncherScriptFallback() throws {
-        let workspace = Workspace()
-        workspace.configureRemoteConnection(
-            WorkspaceRemoteConfiguration(
-                destination: "cmux-macmini",
-                port: nil,
-                identityFile: nil,
-                sshOptions: [],
-                localProxyPort: nil,
-                relayPort: 64000,
-                relayID: "relay-fork",
-                relayToken: String(repeating: "a", count: 64),
-                localSocketPath: "/tmp/cmux-fork-remote.sock",
-                terminalStartupCommand: "ssh cmux-macmini"
-            ),
-            autoConnect: false
-        )
-        let sourcePanelId = try XCTUnwrap(workspace.focusedPanelId)
-        let longPath = "/Users/cmux/" + String(repeating: "nested-project-", count: 120)
-        let snapshot = SessionRestorableAgentSnapshot(
-            kind: .codex,
-            sessionId: "019dad34-d218-7943-b81a-eddac5c87951",
-            workingDirectory: "/Users/cmux/project",
-            launchCommand: AgentLaunchCommandSnapshot(
-                launcher: "codex",
-                executablePath: "/Users/example/.bun/bin/codex",
-                arguments: [
-                    "/Users/example/.bun/bin/codex",
-                    "--model",
-                    "gpt-5.4",
-                    "--add-dir",
-                    longPath
-                ],
-                workingDirectory: "/Users/cmux/project",
-                environment: nil,
-                capturedAt: 123,
-                source: "process"
-            )
-        )
-
-        XCTAssertGreaterThan(
-            (snapshot.forkCommand.map { $0 + "\n" } ?? "").utf8.count,
-            SessionRestorableAgentSnapshot.maxInlineStartupInputBytes
-        )
-        XCTAssertNil(snapshot.forkStartupInput(allowLauncherScript: false))
-        XCTAssertNil(
-            workspace.forkAgentConversation(
-                fromPanelId: sourcePanelId,
-                snapshot: snapshot,
-                direction: .right
-            )
-        )
-        XCTAssertNil(
-            workspace.forkAgentWorkspaceLaunch(
-                fromPanelId: sourcePanelId,
-                snapshot: snapshot
-            )
-        )
     }
 
     func testSidebarGitBranchesFollowLeftToRightSplitOrder() {
@@ -5798,24 +5516,14 @@ final class WorkspacePanelGitBranchTests: XCTestCase {
         )
     }
 
-    func testSidebarObservationPublisherIgnoresRemoteHeartbeatOnlyChanges() {
-        let workspace = Workspace()
-
-        var publishCount = 0
-        let cancellable = workspace.sidebarObservationPublisher.sink {
-            publishCount += 1
-        }
-        defer { cancellable.cancel() }
-
-        workspace.remoteHeartbeatCount = 1
-        workspace.remoteLastHeartbeatAt = Date()
-
-        XCTAssertEqual(
-            publishCount,
-            0,
-            "Expected non-visible remote heartbeat updates to avoid invalidating sidebar rows"
-        )
-    }
+    // Removed: `testSidebarObservationPublisherIgnoresRemoteHeartbeatOnlyChanges`.
+    // The remote-health redesign dropped the per-session daemon heartbeat
+    // counters (`remoteHeartbeatCount` / `remoteLastHeartbeatAt`) entirely —
+    // there is no longer a heartbeat field to mutate, and `remoteStatusPayload`
+    // no longer emits a `heartbeat` block. The surviving "non-visible remote
+    // updates do not invalidate sidebar rows" guarantee is exercised by the
+    // sidebar-observation signal set (only the visible @Published remote fields
+    // are wired into `sidebarObservationPublisher`).
 
     @MainActor
     func testSidebarPullRequestsTrackFocusedPanelOnly() {
@@ -5943,13 +5651,7 @@ final class WorkspacePanelGitBranchTests: XCTestCase {
                 destination: "cmux-macmini",
                 port: nil,
                 identityFile: nil,
-                sshOptions: [],
-                localProxyPort: nil,
-                relayPort: 64007,
-                relayID: String(repeating: "a", count: 16),
-                relayToken: String(repeating: "b", count: 64),
-                localSocketPath: "/tmp/cmux-debug-test.sock",
-                terminalStartupCommand: "ssh cmux-macmini"
+                sshOptions: []
             ),
             autoConnect: false
         )

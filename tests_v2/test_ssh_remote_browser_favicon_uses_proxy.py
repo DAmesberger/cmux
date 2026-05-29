@@ -96,11 +96,11 @@ def _wait_remote_ready(client: cmux, workspace_id: str, timeout_s: float = 65.0)
     while time.time() < deadline:
         last = client._call("workspace.remote.status", {"workspace_id": workspace_id}) or {}
         remote = last.get("remote") or {}
-        daemon = remote.get("daemon") or {}
         proxy = remote.get("proxy") or {}
+        # The `daemon` block was folded into the transport `state` + the
+        # derived `proxy` block by the remote-health redesign.
         if (
             str(remote.get("state") or "") == "connected"
-            and str(daemon.get("state") or "") == "ready"
             and str(proxy.get("state") or "") == "ready"
         ):
             return last

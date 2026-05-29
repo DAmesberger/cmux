@@ -1739,13 +1739,6 @@ enum WorkspaceRemoteConnectionState: String {
     case error
 }
 
-enum WorkspaceRemoteDaemonState: String {
-    case unavailable
-    case bootstrapping
-    case ready
-    case error
-}
-
 /// Snapshot of an in-flight reconnect attempt. Published alongside
 /// `remoteConnectionState` so the reconnect overlay can render the
 /// current attempt number, elapsed time since the drop, and when the
@@ -1785,26 +1778,6 @@ struct WorkspaceRemoteProvisioning: Equatable {
     var progress: Double {
         guard totalBytes > 0 else { return 0 }
         return Double(bytesSent) / Double(totalBytes)
-    }
-}
-
-struct WorkspaceRemoteDaemonStatus: Equatable {
-    var state: WorkspaceRemoteDaemonState = .unavailable
-    var detail: String?
-    var version: String?
-    var name: String?
-    var capabilities: [String] = []
-    var remotePath: String?
-
-    func payload() -> [String: Any] {
-        [
-            "state": state.rawValue,
-            "detail": detail ?? NSNull(),
-            "version": version ?? NSNull(),
-            "name": name ?? NSNull(),
-            "capabilities": capabilities,
-            "remote_path": remotePath ?? NSNull(),
-        ]
     }
 }
 
@@ -2406,18 +2379,30 @@ final class Workspace: Identifiable, ObservableObject {
     @Published var surfaceListeningPorts: [UUID: [Int]] = [:]
     var agentListeningPorts: [Int] = []
     @Published var remoteConfiguration: WorkspaceRemoteConfiguration?
-    @Published var remoteConnectionState: WorkspaceRemoteConnectionState = .disconnected
-    @Published var remoteConnectionDetail: String?
+    /// Single source of truth for this workspace's remote connection
+    /// health. Written ONLY through `dispatchRemote(_:)` ->
+    /// `RemoteHealthReducer.reduce`. Every `remote*` accessor below is a
+    /// computed projection of it, so the many readers + the CLI payload
+    /// all observe one consistent value with no second mutator.
+    @Published private(set) var remoteHealth: RemoteHealth = .disconnected
+    /// Whole-workspace connection state — `remoteHealth.primary` (the
+    /// transport). Capabilities (browser proxy, port-forwards, …) can
+    /// never move this — that is the structural fix for "a degraded proxy
+    /// dims a working terminal."
+    var remoteConnectionState: WorkspaceRemoteConnectionState { remoteHealth.primary }
+    var remoteConnectionDetail: String? {
+        remoteHealth.detailMessage(target: remoteConfiguration?.displayTarget ?? "")
+    }
     /// Non-nil while ghostty is uploading the daemon binary to the
     /// remote host. Drives the upload-progress UI in
     /// `RemoteReconnectOverlay`. Cleared on `.connected` /
     /// `.disconnected` / `.failed`.
-    @Published var remoteProvisioning: WorkspaceRemoteProvisioning?
+    var remoteProvisioning: WorkspaceRemoteProvisioning? { remoteHealth.provisioning }
     /// Non-nil while ghostty is actively retrying a dropped
     /// connection. Drives the "Disconnected for N s · attempt M"
     /// stripe in the overlay. Cleared on `.connected` and on
     /// explicit teardown.
-    @Published var remoteReconnect: WorkspaceRemoteReconnectInfo?
+    var remoteReconnect: WorkspaceRemoteReconnectInfo? { remoteHealth.reconnect }
     /// Wall-clock instant after which any `child_exited` callback for
     /// a remote terminal panel should be treated as a *real* shell
     /// exit. While this is in the future, child_exited is suppressed
@@ -2425,14 +2410,11 @@ final class Workspace: Identifiable, ObservableObject {
     /// session after `.reconnecting → .connected`, and tearing the
     /// panel down at that moment would discard the user's pane
     /// layout right when the reconnect just succeeded.
-    var remoteReconnectGraceUntil: Date?
-    @Published var remoteDaemonStatus: WorkspaceRemoteDaemonStatus = WorkspaceRemoteDaemonStatus()
+    var remoteReconnectGraceUntil: Date? { remoteHealth.graceUntil }
     @Published var remoteDetectedPorts: [Int] = []
     @Published var remoteForwardedPorts: [Int] = []
     @Published var remotePortConflicts: [Int] = []
     @Published var remoteProxyEndpoint: BrowserProxyEndpoint?
-    @Published var remoteHeartbeatCount: Int = 0
-    @Published var remoteLastHeartbeatAt: Date?
     @Published var listeningPorts: [Int] = []
     @Published private(set) var activeRemoteTerminalSessionCount: Int = 0
     var surfaceTTYNames: [UUID: String] = [:]
@@ -2477,8 +2459,22 @@ final class Workspace: Identifiable, ObservableObject {
     /// false the moment we spawn the deferred surface. See
     /// `handleSSHConnectionState`.
     private var pendingInitialRemoteSurface: Bool = false
+    /// Bootstrap gate for the transport-health source. Until the first
+    /// terminal surface reports its own `Remote`-backend connection state
+    /// (via the libghostty per-surface `on_remote_state` callback →
+    /// `acceptTerminalTransportState`), there is no terminal to source
+    /// transport health from — so `RemoteHealth.transport` is driven by the
+    /// browser-proxy / C-API connection (`handleSSHConnectionState`) so the
+    /// "Connecting…" overlay works on first open AND the deferred initial
+    /// terminal still spawns on `.connected`. Once the first terminal
+    /// reports, this flips to `true` and the C-API path stops touching the
+    /// transport, feeding ONLY the `.browserProxy` capability — making a
+    /// proxy-only failure structurally unable to dim a healthy terminal.
+    /// Reset on (re)configure so each fresh connection re-bootstraps.
+    private var hasTerminalTransportSignal: Bool = false
     private var sshStateObserverTask: Task<Void, Never>?
     private var remoteProxyTunnel: RemoteProxyTunnel?
+    private var remoteControlChannel: RemoteControlChannel?
     private var remoteDetectedSurfaceIds: Set<UUID> = []
     private var activeRemoteTerminalSurfaceIds: Set<UUID> = []
     var pendingRemoteTerminalChildExitSurfaceIds: Set<UUID> = []
@@ -2491,11 +2487,6 @@ final class Workspace: Identifiable, ObservableObject {
     private static let remoteErrorStatusKey = "remote.error"
     private static let remotePortConflictStatusKey = "remote.port_conflicts"
     private static let remoteNotificationCooldown: TimeInterval = 5 * 60
-    private static let remoteHeartbeatDateFormatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
     var panelShellActivityStates: [UUID: PanelShellActivityState] = [:]
     /// PIDs associated with agent status entries (e.g. claude_code), keyed by status key.
     /// Used for stale-session detection: if the PID is dead, the status entry is cleared.
@@ -2561,33 +2552,13 @@ final class Workspace: Identifiable, ObservableObject {
             sidebarObservationSignal($pullRequest),
             sidebarObservationSignal($panelPullRequests),
             sidebarObservationSignal($remoteConfiguration),
-            sidebarObservationSignal($remoteConnectionState),
-            sidebarObservationSignal($remoteConnectionDetail),
+            sidebarObservationSignal($remoteHealth),
             sidebarObservationSignal($activeRemoteTerminalSessionCount),
             sidebarObservationSignal($listeningPorts),
         ]
 
         return Publishers.MergeMany(publishers).eraseToAnyPublisher()
     }()
-
-    private static func isProxyOnlyRemoteError(_ detail: String) -> Bool {
-        let lowered = detail.lowercased()
-        return lowered.contains("remote proxy")
-            || lowered.contains("proxy_unavailable")
-            || lowered.contains("local daemon proxy")
-            || lowered.contains("proxy failure")
-            || lowered.contains("daemon transport")
-    }
-
-    private var preservesSSHTerminalConnection: Bool {
-        activeRemoteTerminalSessionCount > 0
-            && false
-    }
-
-    private var hasProxyOnlyRemoteSidebarError: Bool {
-        guard let entry = statusEntries[Self.remoteErrorStatusKey]?.value else { return false }
-        return entry.lowercased().contains("remote proxy unavailable")
-    }
 
     private func remoteNotificationCooldownKey(target: String) -> String? {
         let rawTarget = (remoteConfiguration?.destination ?? target)
@@ -3434,8 +3405,11 @@ final class Workspace: Identifiable, ObservableObject {
         return BrowserRemoteWorkspaceStatus(
             target: target,
             connectionState: remoteConnectionState,
-            heartbeatCount: remoteHeartbeatCount,
-            lastHeartbeatAt: remoteLastHeartbeatAt
+            presentation: RemoteOverlayPolicy.presentation(
+                for: remoteHealth,
+                host: .browser,
+                target: remoteConfiguration?.displayTarget
+            )
         )
     }
 
@@ -3456,13 +3430,11 @@ final class Workspace: Identifiable, ObservableObject {
     /// portal unmounts the hosting view when this workspace isn't remote.
     private func terminalRemoteOverlaySnapshot() -> TerminalPanelRemoteOverlay? {
         guard isRemoteWorkspace else { return nil }
-        return TerminalPanelRemoteOverlay(
-            state: remoteConnectionState,
-            target: remoteConfiguration?.displayTarget,
-            detail: remoteConnectionDetail,
-            provisioning: remoteProvisioning,
-            reconnect: remoteReconnect
-        )
+        return RemoteOverlayPolicy.presentation(
+            for: remoteHealth,
+            host: .terminal,
+            target: remoteConfiguration?.displayTarget
+        ).map { TerminalPanelRemoteOverlay(presentation: $0) }
     }
 
     // MARK: - Panel Access
@@ -4597,62 +4569,58 @@ final class Workspace: Identifiable, ObservableObject {
         )
     }
 
-    func remoteStatusPayload() -> [String: Any] {
-        let heartbeatAgeSeconds: Any = {
-            guard let last = remoteLastHeartbeatAt else { return NSNull() }
-            return max(0, Date().timeIntervalSince(last))
-        }()
-        let heartbeatTimestamp: Any = {
-            guard let last = remoteLastHeartbeatAt else { return NSNull() }
-            return Self.remoteHeartbeatDateFormatter.string(from: last)
-        }()
-        var payload: [String: Any] = [
-            "enabled": remoteConfiguration != nil,
-            "state": remoteConnectionState.rawValue,
-            "connected": remoteConnectionState == .connected,
-            "active_terminal_sessions": activeRemoteTerminalSessionCount,
-            "daemon": remoteDaemonStatus.payload(),
-            "detected_ports": remoteDetectedPorts,
-            "forwarded_ports": remoteForwardedPorts,
-            "conflicted_ports": remotePortConflicts,
-            "detail": remoteConnectionDetail ?? NSNull(),
-            "heartbeat": [
-                "count": remoteHeartbeatCount,
-                "last_seen_at": heartbeatTimestamp,
-                "age_seconds": heartbeatAgeSeconds,
-            ],
-        ]
-        if let endpoint = remoteProxyEndpoint {
-            payload["proxy"] = [
+    /// Build the `proxy` sub-payload from the single source of truth
+    /// (`remoteHealth.capabilities[.browserProxy]`) plus the published
+    /// `remoteProxyEndpoint`. The capability state — not the old endpoint-
+    /// presence + localized-substring `hasProxyOnlyRemoteSidebarError` guess —
+    /// decides `state`. The external JSON contract is unchanged:
+    /// `state` ∈ {ready, connecting, error, unavailable}, `host`/`port`/`url`
+    /// populated only when ready, `error_code` = "proxy_unavailable" on error,
+    /// `schemes` = [socks5, http_connect].
+    private func remoteProxyStatusPayload() -> [String: Any] {
+        let capability = remoteHealth.capabilities[.browserProxy]
+        let state: String
+        switch capability?.state {
+        case .ready: state = "ready"
+        case .connecting: state = "connecting"
+        case .degraded: state = "error"
+        case .unavailable, .none: state = "unavailable"
+        }
+
+        // Only a `ready` proxy with a published endpoint exposes the dial
+        // target; every other state nulls host/port/url just as before.
+        if state == "ready", let endpoint = remoteProxyEndpoint {
+            return [
                 "state": "ready",
                 "host": endpoint.host,
                 "port": endpoint.port,
                 "schemes": ["socks5", "http_connect"],
                 "url": "socks5://\(endpoint.host):\(endpoint.port)",
             ]
-        } else {
-            let proxyState: String
-            if hasProxyOnlyRemoteSidebarError {
-                proxyState = "error"
-            } else {
-                switch remoteConnectionState {
-                case .connecting, .reconnecting:
-                    proxyState = "connecting"
-                case .error:
-                    proxyState = "error"
-                default:
-                    proxyState = "unavailable"
-                }
-            }
-            payload["proxy"] = [
-                "state": proxyState,
-                "host": NSNull(),
-                "port": NSNull(),
-                "schemes": ["socks5", "http_connect"],
-                "url": NSNull(),
-                "error_code": proxyState == "error" ? "proxy_unavailable" : NSNull(),
-            ]
         }
+
+        return [
+            "state": state,
+            "host": NSNull(),
+            "port": NSNull(),
+            "schemes": ["socks5", "http_connect"],
+            "url": NSNull(),
+            "error_code": state == "error" ? "proxy_unavailable" : NSNull(),
+        ]
+    }
+
+    func remoteStatusPayload() -> [String: Any] {
+        var payload: [String: Any] = [
+            "enabled": remoteConfiguration != nil,
+            "state": remoteConnectionState.rawValue,
+            "connected": remoteConnectionState == .connected,
+            "active_terminal_sessions": activeRemoteTerminalSessionCount,
+            "detected_ports": remoteDetectedPorts,
+            "forwarded_ports": remoteForwardedPorts,
+            "conflicted_ports": remotePortConflicts,
+            "detail": remoteConnectionDetail ?? NSNull(),
+        ]
+        payload["proxy"] = remoteProxyStatusPayload()
         if let remoteConfiguration {
             payload["transport"] = "ssh"
             payload["destination"] = remoteConfiguration.destination
@@ -4674,16 +4642,15 @@ final class Workspace: Identifiable, ObservableObject {
     func configureRemoteConnection(_ configuration: WorkspaceRemoteConfiguration, autoConnect: Bool = true) {
         remoteConfiguration = configuration
         liveDaemonGroupID = nil
+        // Re-bootstrap transport health: until a terminal surface on the
+        // fresh connection reports, the C-API path drives `.transport`.
+        hasTerminalTransportSignal = false
         resetRemoteSurfaceCreationGate()
         clearRemoteDetectedSurfacePorts()
         remoteDetectedPorts = []
         remoteForwardedPorts = []
         remotePortConflicts = []
         remoteProxyEndpoint = nil
-        remoteHeartbeatCount = 0
-        remoteLastHeartbeatAt = nil
-        remoteConnectionDetail = nil
-        remoteDaemonStatus = WorkspaceRemoteDaemonStatus()
         statusEntries.removeValue(forKey: Self.remoteErrorStatusKey)
         statusEntries.removeValue(forKey: Self.remotePortConflictStatusKey)
         recomputeListeningPorts()
@@ -4707,8 +4674,7 @@ final class Workspace: Identifiable, ObservableObject {
         // Without the integration, the PTY-relay gate falls back to
         // local shells, which is the M6 user-reported behaviour
         // ("2nd terminal is local").
-        remoteConnectionState = .connecting
-        applyBrowserRemoteWorkspaceStatusToPanels()
+        dispatchRemote(.userReconnect)
 
         do {
             let appHandle = GhosttyApp.shared.app
@@ -4726,8 +4692,7 @@ final class Workspace: Identifiable, ObservableObject {
                 }
             }
         } catch {
-            remoteConnectionState = .error
-            applyBrowserRemoteWorkspaceStatusToPanels()
+            dispatchRemote(.localFailure(.unknown("")))
         }
 
         _ = autoConnect // kept on the signature for callers that still pass it
@@ -4740,12 +4705,20 @@ final class Workspace: Identifiable, ObservableObject {
 
     func disconnectRemoteConnection(clearConfiguration: Bool = false) {
         stopRemoteProxyTunnel()
+        stopRemoteControlChannel()
         let previousIntegration = sshIntegration
         sshIntegration = nil
         sshStateObserverTask?.cancel()
         sshStateObserverTask = nil
+        // FINDING D: detach the per-surface remote-state forwarders so a late
+        // `on_remote_state` callback from a surface being torn down cannot
+        // re-enter `acceptTerminalTransportState` after disconnect. The
+        // `sshIntegration == nil` guard there is the primary defense; clearing
+        // the handlers here stops the callback at the source.
+        clearRemoteSurfaceCallbacks()
         previousIntegration?.tearDown()
         liveDaemonGroupID = nil
+        hasTerminalTransportSignal = false
         resetRemoteSurfaceCreationGate()
         activeRemoteTerminalSurfaceIds.removeAll()
         activeRemoteTerminalSessionCount = 0
@@ -4756,14 +4729,7 @@ final class Workspace: Identifiable, ObservableObject {
         remoteForwardedPorts = []
         remotePortConflicts = []
         remoteProxyEndpoint = nil
-        remoteHeartbeatCount = 0
-        remoteLastHeartbeatAt = nil
-        remoteConnectionState = .disconnected
-        remoteConnectionDetail = nil
-        remoteProvisioning = nil
-        remoteReconnect = nil
-        remoteReconnectGraceUntil = nil
-        remoteDaemonStatus = WorkspaceRemoteDaemonStatus()
+        dispatchRemote(.userDisconnect)
         statusEntries.removeValue(forKey: Self.remoteErrorStatusKey)
         statusEntries.removeValue(forKey: Self.remotePortConflictStatusKey)
         if clearConfiguration {
@@ -4774,147 +4740,189 @@ final class Workspace: Identifiable, ObservableObject {
         recomputeListeningPorts()
     }
 
-    /// Seed `remoteReconnect` with a placeholder snapshot when we're
-    /// forcing the workspace into `.reconnecting` because of a
-    /// `.failed` / `.disconnected` ghostty signal that didn't carry a
-    /// `Reconnect` payload. Without this the overlay shows
-    /// "Reconnecting…" with no elapsed counter — the user has no way
-    /// to tell the retry loop is actually still running.
-    private func seedReconnectInfoIfNeeded() {
-        if remoteReconnect == nil {
-            remoteReconnect = WorkspaceRemoteReconnectInfo(
-                attempt: 0,
-                maxAttempts: UInt32.max,
-                startedAt: Date(),
-                nextRetryAt: nil
-            )
-        }
-    }
-
-    private func provisioningSource(
-        from c: Ghostty.ConnectionState.ProvisionSource
-    ) -> WorkspaceRemoteProvisioning.Source {
-        switch c {
-        case .localDaemon: return .localDaemon
-        case .localSelf: return .localSelf
-        case .github: return .github
-        }
-    }
-
+    /// The whole-connection SSH state observer (the browser-proxy / port-
+    /// forward C-API connection owned by `WorkspaceSSHIntegration`).
+    ///
+    /// This is NOT the terminal's transport anymore. As soon as the first
+    /// terminal surface reports its own `Remote`-backend state (via
+    /// `acceptTerminalTransportState`), this connection feeds ONLY the
+    /// derived `.browserProxy` capability — which structurally cannot move
+    /// `RemoteHealth.transport`, so a proxy-only drop cannot dim a healthy
+    /// terminal. UNTIL that first terminal report, we still drive
+    /// `.transport` here so the initial "Connecting…" overlay shows and the
+    /// deferred initial terminal spawns on `.connected` (the terminal that
+    /// then becomes the authoritative transport source).
     private func handleSSHConnectionState(
         _ state: Ghostty.ConnectionState,
         configuration: WorkspaceRemoteConfiguration
     ) {
 #if DEBUG
-        cmuxDebugLog("remote.ssh.state workspace=\(id.uuidString.prefix(5)) state=\(state)")
+        cmuxDebugLog("remote.proxy.state workspace=\(id.uuidString.prefix(5)) state=\(state) hasTerminal=\(hasTerminalTransportSignal)")
 #endif
-        let wasReconnecting = remoteConnectionState == .reconnecting
+        _ = configuration
+        // Always reflect this connection into the browser-proxy capability.
+        dispatchRemote(.capability(.browserProxy, Self.proxyCapabilityHealth(from: state)))
+        // Bootstrap only: drive the transport from the C-API connection
+        // until a terminal surface takes over as the transport source.
+        if !hasTerminalTransportSignal {
+            dispatchRemote(.transport(state))
+        }
+    }
+
+    /// The per-surface terminal transport-health source. Fed by the
+    /// libghostty `on_remote_state` callback for a remote `TerminalPanel`'s
+    /// surface (its OWN pooled `Entry`). The first call latches
+    /// `hasTerminalTransportSignal`, after which `handleSSHConnectionState`
+    /// stops touching `.transport`. This is the core fix: terminal
+    /// transport health now comes from the terminal's connection, not the
+    /// browser-proxy connection.
+    func acceptTerminalTransportState(_ state: Ghostty.ConnectionState) {
+        // FINDING D: a late per-surface `on_remote_state` callback can fire
+        // AFTER the user disconnected (the pooled `Entry` flushes a final
+        // `.reconnecting`/`.disconnected` while the surface is being torn down).
+        // The forwarder closure is `[weak self]` but `self` is still alive, so
+        // without this guard the stale callback re-drives `.transport` and the
+        // reducer flips a freshly-disconnected workspace back to
+        // `.reconnecting`. No-op once this workspace is no longer a live remote
+        // connection. `disconnectRemoteConnection` also clears the per-surface
+        // handlers (below) so most late callbacks never reach here at all.
+        guard remoteConfiguration != nil, sshIntegration != nil else {
+#if DEBUG
+            cmuxDebugLog("remote.terminal.state.ignored workspace=\(id.uuidString.prefix(5)) state=\(state)")
+#endif
+            return
+        }
+#if DEBUG
+        cmuxDebugLog("remote.terminal.state workspace=\(id.uuidString.prefix(5)) state=\(state)")
+#endif
+        hasTerminalTransportSignal = true
+        dispatchRemote(.transport(state))
+    }
+
+    /// Map a whole-connection SSH state to a NON-authoritative
+    /// `.browserProxy` capability hint that tracks the underlying transport
+    /// the proxy rides. This mapping deliberately NEVER returns `.ready`:
+    ///
+    /// FINDING G: the C-API connection reaching `.connected` says only that
+    /// the SSH transport is up, NOT that a SOCKS proxy tunnel is actually
+    /// running. The authoritative `.ready` / `.degraded` for the browser
+    /// proxy is owned by the `RemoteProxyTunnel` lifecycle (Stage 5):
+    /// `startRemoteProxyTunnel` emits `.ready` on a successful local-listener
+    /// bind, `.degraded(.helperFailed)` when the bind fails, and the channel-
+    /// close callback emits `.degraded(.channelClosed)`. If the C-API path
+    /// asserted `.ready` from `.connected` alone, `remoteProxyStatusPayload`
+    /// could report `state: "ready"` while the SOCKS listener was down. So
+    /// `.connected` here maps to `.connecting` (transport up, tunnel not yet
+    /// confirmed); the `.transport(.connected)` reducer event appends
+    /// `.startProxyTunnel`, whose success/failure immediately overwrites this
+    /// hint with the real `.ready`/`.degraded`.
+    /// `.connecting/.uploading/.downloading/.setup/.passwordRequired/.reconnecting/.stale
+    /// → connecting`, `.failed/.disconnected → degraded` with the typed
+    /// reason.
+    private static func proxyCapabilityHealth(
+        from state: Ghostty.ConnectionState
+    ) -> RemoteCapabilityHealth {
         switch state {
         case .connected:
-            remoteConnectionState = .connected
-            remoteConnectionDetail = nil
-            remoteProvisioning = nil
-            remoteReconnect = nil
-            // Open a grace window so the late child_exited that
-            // libghostty emits for the old (now dead) daemon session
-            // doesn't tear remote terminal panels down right after
-            // the user just saw "Reconnecting…" clear. The window
-            // outlives the typical surface-callback delivery delay
-            // but is short enough that a real shell exit a few
-            // seconds after reconnect still tears the panel down.
-            if wasReconnecting {
-                remoteReconnectGraceUntil = Date().addingTimeInterval(5)
-            } else {
-                remoteReconnectGraceUntil = nil
-            }
-            statusEntries.removeValue(forKey: Self.remoteErrorStatusKey)
+            // Transport is up; the proxy tunnel lifecycle owns `.ready`.
+            return RemoteCapabilityHealth(state: .connecting)
+        case .connecting, .uploading, .downloading, .setup, .passwordRequired,
+             .reconnecting, .stale:
+            return RemoteCapabilityHealth(state: .connecting)
+        case .failed(let failure):
+            return RemoteCapabilityHealth(
+                state: .degraded,
+                reason: RemoteCapabilityError.from(failure.reason)
+            )
+        case .disconnected:
+            return RemoteCapabilityHealth(
+                state: .degraded,
+                reason: .transportLost
+            )
+        }
+    }
+
+    /// The single entry point that mutates `remoteHealth`: run the pure
+    /// reducer, store the result, perform the returned side effects, then
+    /// fan the new health out to the panel overlays. The ONLY writer of
+    /// `remoteHealth` — the old `applyRemoteConnectionStateUpdate`
+    /// divergence is gone.
+    private func dispatchRemote(_ event: RemoteEvent) {
+        let (next, effects) = RemoteHealthReducer.reduce(remoteHealth, event, now: Date())
+        remoteHealth = next
+        for effect in effects { performRemoteEffect(effect) }
+        applyBrowserRemoteWorkspaceStatusToPanels()
+    }
+
+#if DEBUG
+    /// Test-only seam: drive a `RemoteEvent` through the SAME single writer
+    /// (`dispatchRemote`) the live SSH observer uses. Lets value-level tests
+    /// exercise the reducer-driven `remoteHealth` (and the capability vs
+    /// transport split) without standing up a live SSH connection. There is
+    /// deliberately no production caller — the only mutator of `remoteHealth`
+    /// in shipping code is the private `dispatchRemote`.
+    func dispatchRemoteForTesting(_ event: RemoteEvent) {
+        dispatchRemote(event)
+    }
+
+    /// Test-only seam mirroring `handleSSHConnectionState`'s latch-gated
+    /// bootstrap path: the C-API (browser-proxy/port-forward) connection only
+    /// drives `RemoteHealth.transport` while no terminal surface has taken over
+    /// as the authoritative transport source. Returns `true` when the bootstrap
+    /// source actually drove the transport (the latch was open). Lets a
+    /// value-level test verify FINDING F — that closing the last remote
+    /// terminal surface re-arms the latch so the bootstrap source can drive
+    /// transport again — without standing up a live SSH connection or reading
+    /// the private latch directly.
+    @discardableResult
+    func driveBootstrapTransportForTesting(_ state: Ghostty.ConnectionState) -> Bool {
+        guard !hasTerminalTransportSignal else { return false }
+        dispatchRemote(.transport(state))
+        return true
+    }
+#endif
+
+    private func performRemoteEffect(_ effect: RemoteEffect) {
+        switch effect {
+        case .startProxyTunnel:
             startRemoteProxyTunnel()
+        case .stopProxyTunnel:
+            stopRemoteProxyTunnel()
+        case .startControlChannel:
+            startRemoteControlChannel()
+        case .stopControlChannel:
+            stopRemoteControlChannel()
+        case .requestReconnect:
+            sshIntegration?.connection.requestReconnect()
+        case .spawnDeferredInitialTerminal:
             // M6: spawn the deferred initial terminal now that the SSH
-            // integration is up. `newTerminalSurface`'s PTY-relay gate
-            // will pass (isRemoteWorkspace + sshIntegration != nil) so
-            // the very first terminal in this workspace is wired
-            // through libghostty, not a local shell.
+            // integration is up; `newTerminalSurface`'s PTY-relay gate
+            // passes so the first terminal routes through libghostty.
             if pendingInitialRemoteSurface {
                 pendingInitialRemoteSurface = false
                 if let initialPaneId = bonsplitController.allPaneIds.first {
                     _ = newTerminalSurface(inPane: initialPaneId, focus: true)
                 }
             }
-        case .connecting:
-            remoteConnectionState = .connecting
-            remoteProvisioning = nil
-        case .uploading(let upload):
-            // Stay in `.connecting` from the UI/state-machine standpoint
-            // — the SSH transport is still being brought up. The overlay
-            // reads `remoteProvisioning` separately and swaps its
-            // headline + adds a progress bar when this is non-nil.
-            remoteConnectionState = .connecting
-            remoteProvisioning = WorkspaceRemoteProvisioning(
-                bytesSent: upload.bytesSent,
-                totalBytes: upload.totalBytes,
-                source: provisioningSource(from: upload.source)
-            )
-        case .reconnecting(let info):
-            remoteConnectionState = .reconnecting
-            remoteProvisioning = nil
-            // Preserve the original drop instant across successive
-            // `.reconnecting` updates (libghostty fires one per
-            // attempt + one for each backoff sleep). If we already
-            // have a `remoteReconnect` snapshot, keep its
-            // `startedAt`; otherwise the drop is fresh now.
-            let startedAt = remoteReconnect?.startedAt
-                ?? Date().addingTimeInterval(-info.elapsed)
-            remoteReconnect = WorkspaceRemoteReconnectInfo(
-                attempt: info.attempt,
-                maxAttempts: info.maxAttempts,
-                startedAt: startedAt,
-                nextRetryAt: info.nextRetry
-            )
-            stopRemoteProxyTunnel()
-        case .failed(let failure):
-            // Treat any "failed" notification from libghostty as a
-            // transient drop, not a terminal state. The user has
-            // asked for relentless reconnect, so we stay in
-            // `.reconnecting` and immediately ping ghostty to retry
-            // (the reconnect loop wakes from its backoff sleep on
-            // this signal). Keeping the workspace out of `.error`
-            // also means the panel overlay never flips to
-            // "Connection lost".
-            let message = failure.message ?? "SSH connection failed"
-            remoteConnectionDetail = message
-            remoteProvisioning = nil
-            // Don't clear `remoteReconnect` — preserve the running
-            // "Disconnected for Ns" counter across this transient
-            // failure.
+        case .clearErrorStatus:
+            statusEntries.removeValue(forKey: Self.remoteErrorStatusKey)
+        case .writeErrorStatus(let err):
+            let target = remoteConfiguration?.displayTarget ?? ""
             statusEntries[Self.remoteErrorStatusKey] = SidebarStatusEntry(
                 key: Self.remoteErrorStatusKey,
-                value: "SSH error (\(configuration.displayTarget)): \(message)",
+                value: String(
+                    format: String(
+                        localized: "remote.error.statusEntry",
+                        defaultValue: "SSH error (%@): %@"
+                    ),
+                    locale: .current,
+                    target,
+                    err.localizedMessage(target: target)
+                ),
                 icon: "network.slash",
                 timestamp: Date()
             )
-            stopRemoteProxyTunnel()
-            remoteConnectionState = .reconnecting
-            seedReconnectInfoIfNeeded()
-            sshIntegration?.connection.requestReconnect()
-        case .disconnected:
-            // We never want to surface a "Disconnected" screen — the
-            // user wants relentless reconnect. Whatever the reason
-            // ghostty broadcast this (exhausted, cancelled, disabled),
-            // we re-arm: stay in `.reconnecting`, keep the running
-            // counter alive, and ask libghostty to wake its
-            // `waitForManualReconnect` loop and try again. The only
-            // legitimate path to `.disconnected` state is
-            // `disconnectRemoteConnection()` driven by the user
-            // explicitly closing the connection.
-            remoteProvisioning = nil
-            stopRemoteProxyTunnel()
-            remoteConnectionState = .reconnecting
-            seedReconnectInfoIfNeeded()
-            sshIntegration?.connection.requestReconnect()
-        default:
-            break
         }
-        applyBrowserRemoteWorkspaceStatusToPanels()
     }
 
     private func clearRemoteConfigurationIfWorkspaceBecameLocal() {
@@ -4994,9 +5002,13 @@ final class Workspace: Identifiable, ObservableObject {
         // `on_remote_opened` callback). See `liveDaemonGroupID` doc and
         // the comments on `RemoteSurfaceSSHContext.sshGroupID` for the
         // open_type rationale.
+        // Encode any ProxyJump into the ssh_target via ghostty's ` via `
+        // syntax so the terminal surface and the C-API proxy connection
+        // resolve the SAME libssh2 pool key and share one SSH connection.
+        // See `WorkspaceRemoteConfiguration.surfaceSSHTarget`.
         if let daemonGroupID = liveDaemonGroupID {
             return RemoteSurfaceSSHContext(
-                sshTarget: configuration.displayTarget,
+                sshTarget: configuration.surfaceSSHTarget,
                 sshSessionID: nil,
                 sshGroupID: hexUUID(daemonGroupID),
                 sshSurfaceID: restoreRemoteSurfaceID,
@@ -5004,7 +5016,7 @@ final class Workspace: Identifiable, ObservableObject {
             )
         }
         return RemoteSurfaceSSHContext(
-            sshTarget: configuration.displayTarget,
+            sshTarget: configuration.surfaceSSHTarget,
             sshSessionID: hexUUID(configuration.groupID),
             sshGroupID: nil,
             sshSurfaceID: restoreRemoteSurfaceID,
@@ -5114,6 +5126,36 @@ final class Workspace: Identifiable, ObservableObject {
                 workspace.remoteSurfaceIdByPanelId[panelId] = surfaceID
             }
         }
+        bindRemoteStateCallback(for: panel)
+    }
+
+    /// Install a transport-state forwarder on the panel's `TerminalSurface`
+    /// so the surface's OWN `Remote`-backend connection state (its pooled
+    /// `Entry`, the same connection the data plane rides) flows back to
+    /// `acceptTerminalTransportState` and becomes the authoritative source
+    /// of `RemoteHealth.transport`. Installed from every site that creates
+    /// a remote `TerminalPanel`. No-op for local surfaces — the libghostty
+    /// callback only fires for SSH-backed surfaces, but we install the
+    /// forwarder unconditionally to keep the call sites uniform (mirrors
+    /// `bindRemoteOpenedCallback`).
+    fileprivate func bindRemoteStateCallback(for panel: TerminalPanel) {
+        panel.surface.remoteStateHandler = { [weak self] state in
+            self?.acceptTerminalTransportState(state)
+        }
+    }
+
+    /// FINDING D: detach the per-surface remote forwarders installed by
+    /// `bindRemoteOpenedCallback` / `bindRemoteStateCallback`. Called on
+    /// disconnect so a late `on_remote_state` callback from a surface being
+    /// torn down cannot re-drive `RemoteHealth.transport` after the user
+    /// disconnected (which would flip a freshly-disconnected workspace back to
+    /// `.reconnecting`).
+    private func clearRemoteSurfaceCallbacks() {
+        for panel in panels.values {
+            guard let terminalPanel = panel as? TerminalPanel else { continue }
+            terminalPanel.surface.remoteStateHandler = nil
+            terminalPanel.surface.remoteOpenedHandler = nil
+        }
     }
 
     /// Render a `UUID` as a 32-char lowercase hex string (no dashes), the
@@ -5133,6 +5175,21 @@ final class Workspace: Identifiable, ObservableObject {
     func untrackRemoteTerminalSurface(_ panelId: UUID) {
         guard activeRemoteTerminalSurfaceIds.remove(panelId) != nil else { return }
         activeRemoteTerminalSessionCount = activeRemoteTerminalSurfaceIds.count
+        // FINDING F: the terminal-transport latch (`hasTerminalTransportSignal`)
+        // is only re-armed in (dis)connect today, so once every remote terminal
+        // surface has closed — e.g. a browser-only remote workspace keeps the
+        // connection up after the last shell is gone — the latch stays `true`
+        // and `handleSSHConnectionState`'s `if !hasTerminalTransportSignal`
+        // guard permanently bars the C-API connection from driving
+        // `RemoteHealth.transport`. With no live terminal left to source
+        // transport health, transport can get stuck. Drop the latch when the
+        // active terminal set empties so the bootstrap (C-API) source takes the
+        // transport again until a new terminal surface reports. This only
+        // re-opens the bootstrap path; capabilities still cannot demote
+        // transport (the RemoteHealth invariant is untouched).
+        if activeRemoteTerminalSurfaceIds.isEmpty {
+            hasTerminalTransportSignal = false
+        }
         guard !isDetachingCloseTransaction else { return }
         maybeDemoteRemoteWorkspaceAfterSSHSessionEnded()
     }
@@ -5149,7 +5206,6 @@ final class Workspace: Identifiable, ObservableObject {
         let hasBrowserPanels = panels.values.contains { $0 is BrowserPanel }
         if !hasBrowserPanels {
             if remoteConnectionState == .error ||
-                remoteDaemonStatus.state == .error ||
                 remoteConnectionState == .connecting ||
                 remoteConnectionState == .reconnecting {
                 return
@@ -5204,84 +5260,6 @@ final class Workspace: Identifiable, ObservableObject {
         sshIntegration?.killRemoteSession(groupID: cfg.groupID)
     }
 
-
-
-
-
-    func applyRemoteConnectionStateUpdate(
-        _ state: WorkspaceRemoteConnectionState,
-        detail: String?,
-        target: String
-    ) {
-        let trimmedDetail = detail?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let proxyOnlyError = trimmedDetail.map(Self.isProxyOnlyRemoteError) ?? false
-        let preserveConnectedStateForRetry =
-            (state == .connecting || state == .reconnecting) &&
-                preservesSSHTerminalConnection &&
-                hasProxyOnlyRemoteSidebarError
-        let effectiveState: WorkspaceRemoteConnectionState
-        if state == .error && proxyOnlyError && preservesSSHTerminalConnection {
-            effectiveState = .connected
-        } else if preserveConnectedStateForRetry {
-            effectiveState = .connected
-        } else {
-            effectiveState = state
-        }
-
-        remoteConnectionState = effectiveState
-        remoteConnectionDetail = detail
-        applyBrowserRemoteWorkspaceStatusToPanels()
-
-        if let trimmedDetail, !trimmedDetail.isEmpty, (state == .error || proxyOnlyError) {
-            let statusPrefix = proxyOnlyError ? "Remote proxy unavailable" : "SSH error"
-            let statusIcon = proxyOnlyError ? "exclamationmark.triangle.fill" : "network.slash"
-            let notificationTitle = proxyOnlyError ? "Remote Proxy Unavailable" : "Remote SSH Error"
-            let logSource = proxyOnlyError ? "remote-proxy" : "remote"
-            statusEntries[Self.remoteErrorStatusKey] = SidebarStatusEntry(
-                key: Self.remoteErrorStatusKey,
-                value: "\(statusPrefix) (\(target)): \(trimmedDetail)",
-                icon: statusIcon,
-                color: nil,
-                timestamp: Date()
-            )
-
-            appendSidebarLog(
-                message: "\(statusPrefix) (\(target)): \(trimmedDetail)",
-                level: .error,
-                source: logSource
-            )
-            AppDelegate.shared?.notificationStore?.addNotification(
-                tabId: id,
-                surfaceId: nil,
-                title: notificationTitle,
-                subtitle: target,
-                body: trimmedDetail,
-                cooldownKey: remoteNotificationCooldownKey(target: target),
-                cooldownInterval: Self.remoteNotificationCooldown
-            )
-            return
-        }
-
-        if state == .connected {
-            statusEntries.removeValue(forKey: Self.remoteErrorStatusKey)
-        }
-    }
-
-    fileprivate func applyRemoteDaemonStatusUpdate(_ status: WorkspaceRemoteDaemonStatus, target: String) {
-        remoteDaemonStatus = status
-        applyBrowserRemoteWorkspaceStatusToPanels()
-        guard status.state == .error else {
-            return
-        }
-        let trimmedDetail = status.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "remote daemon error"
-        let fingerprint = "daemon:\(trimmedDetail)"
-        appendSidebarLog(
-            message: "Remote daemon error (\(target)): \(trimmedDetail)",
-            level: .error,
-            source: "remote-daemon"
-        )
-    }
-
     fileprivate func applyRemoteProxyEndpointUpdate(_ endpoint: BrowserProxyEndpoint?) {
         remoteProxyEndpoint = endpoint
         for panel in panels.values {
@@ -5292,8 +5270,17 @@ final class Workspace: Identifiable, ObservableObject {
     }
 
     /// Start a `RemoteProxyTunnel` on the workspace's `SSHConnection` and publish the
-    /// local port as a `BrowserProxyEndpoint`. Called from `handleSSHConnectionState`
-    /// on `.connected`. Idempotent: stops any existing tunnel before starting a new one.
+    /// local port as a `BrowserProxyEndpoint`. Called from the reducer's
+    /// `.startProxyTunnel` effect on `.connected`. Idempotent: stops any existing
+    /// tunnel before starting a new one.
+    ///
+    /// This is the AUTHORITATIVE source of the `.browserProxy` capability:
+    /// the coarse `handleSSHConnectionState` mapping seeds the capability from
+    /// the C-API connection state, but the tunnel lifecycle refines it to the
+    /// truth — `.ready` only once the local listener is actually bound and the
+    /// endpoint is published, `.degraded(.helperFailed)` if the listener can't
+    /// bind, and `.degraded(.channelClosed)` when a proxy mux channel closes
+    /// because the underlying transport dropped.
     func startRemoteProxyTunnel() {
         guard let integration = sshIntegration else {
 #if DEBUG
@@ -5303,16 +5290,41 @@ final class Workspace: Identifiable, ObservableObject {
         }
         remoteProxyTunnel?.stop()
         let tunnel = RemoteProxyTunnel(connection: integration.connection)
+        // Key teardown on the actual proxy channel close (transport drop /
+        // daemon shutdown) rather than on transient transport `.reconnecting`
+        // ticks. Stopping on every reconnecting tick churned
+        // WKWebView.proxyConfigurations and raced the documented mux-teardown
+        // UAF; the tunnel now survives a brief blip and only tears down when a
+        // channel genuinely closed at the transport layer.
+        tunnel.onTransportChannelClosed = { [weak self] in
+            guard let self else { return }
+#if DEBUG
+            cmuxDebugLog("remote.proxy.channelClosed workspace=\(self.id.uuidString.prefix(5))")
+#endif
+            self.dispatchRemote(.capability(.browserProxy, RemoteCapabilityHealth(
+                state: .degraded,
+                reason: .channelClosed
+            )))
+            self.stopRemoteProxyTunnel()
+        }
         do {
             let port = try tunnel.start()
             remoteProxyTunnel = tunnel
             applyRemoteProxyEndpointUpdate(BrowserProxyEndpoint(host: "127.0.0.1", port: Int(port)))
+            dispatchRemote(.capability(.browserProxy, .ready))
 #if DEBUG
             cmuxDebugLog("remote.proxy.start.ok workspace=\(id.uuidString.prefix(5)) port=\(port)")
 #endif
         } catch {
             remoteProxyTunnel = nil
             applyRemoteProxyEndpointUpdate(nil)
+            // The transport is up (we only start the tunnel on `.connected`)
+            // but the local proxy listener could not be bound, so the browser
+            // proxy capability is genuinely degraded — not merely unavailable.
+            dispatchRemote(.capability(.browserProxy, RemoteCapabilityHealth(
+                state: .degraded,
+                reason: .helperFailed
+            )))
 #if DEBUG
             cmuxDebugLog("remote.proxy.start.fail workspace=\(id.uuidString.prefix(5)) error=\(error)")
 #endif
@@ -5320,65 +5332,65 @@ final class Workspace: Identifiable, ObservableObject {
     }
 
     /// Stop the running `RemoteProxyTunnel` and clear the published proxy endpoint.
-    /// Called from `handleSSHConnectionState` on `.reconnecting`, `.failed`, `.disconnected`.
+    /// Called from the reducer's `.stopProxyTunnel` effect and from the
+    /// channel-close callback. Does NOT itself dispatch a capability event —
+    /// callers decide the resulting capability state (the channel-close path
+    /// marks `.degraded`; the reducer-driven path leaves the coarse
+    /// connection-state mapping in `handleSSHConnectionState` to govern it).
     func stopRemoteProxyTunnel() {
+        remoteProxyTunnel?.onTransportChannelClosed = nil
         remoteProxyTunnel?.stop()
         remoteProxyTunnel = nil
         applyRemoteProxyEndpointUpdate(nil)
     }
 
-    fileprivate func applyRemoteHeartbeatUpdate(count: Int, lastSeenAt: Date?) {
-        remoteHeartbeatCount = max(0, count)
-        remoteLastHeartbeatAt = lastSeenAt
-        applyBrowserRemoteWorkspaceStatusToPanels()
-    }
-
-    fileprivate func applyRemoteDetectedSurfacePortsSnapshot(
-        detectedByPanel: [UUID: [Int]],
-        detected: [Int],
-        forwarded: [Int],
-        conflicts: [Int],
-        target: String
-    ) {
-        let trackedSurfaceIds = Set(detectedByPanel.keys)
-        for panelId in remoteDetectedSurfaceIds.subtracting(trackedSurfaceIds) {
-            surfaceListeningPorts.removeValue(forKey: panelId)
-        }
-        remoteDetectedSurfaceIds = trackedSurfaceIds
-
-        for (panelId, ports) in detectedByPanel {
-            if ports.isEmpty {
-                surfaceListeningPorts.removeValue(forKey: panelId)
-            } else {
-                surfaceListeningPorts[panelId] = ports
-            }
-        }
-
-        remoteDetectedPorts = detected
-        remoteForwardedPorts = forwarded
-        remotePortConflicts = conflicts
-        recomputeListeningPorts()
-
-        if conflicts.isEmpty {
-            statusEntries.removeValue(forKey: Self.remotePortConflictStatusKey)
+    /// Start the `cmux_control` reverse channel so an agent/CLI on the remote
+    /// host can deliver cmux notifications (`cmux notify` / `notify_target` /
+    /// `report_*`) to the local app. Called from the reducer's
+    /// `.startControlChannel` effect on `.connected`. Idempotent: replaces any
+    /// existing channel. Mirrors `startRemoteProxyTunnel`'s lifecycle.
+    ///
+    /// The channel runs each framed request through the SAME
+    /// `TerminalController.handleSocketLine` dispatcher the local socket uses,
+    /// so there is one shared command path (no duplication of notify/report
+    /// logic), and it can never demote the workspace `primary` transport — its
+    /// health lives in `remoteHealth.capabilities[.cmuxControl]`.
+    func startRemoteControlChannel() {
+        guard let integration = sshIntegration else {
+#if DEBUG
+            cmuxDebugLog("remote.control.start.skip workspace=\(id.uuidString.prefix(5)) reason=no_integration")
+#endif
             return
         }
-
-        let conflictsList = conflicts.map { ":\($0)" }.joined(separator: ", ")
-        statusEntries[Self.remotePortConflictStatusKey] = SidebarStatusEntry(
-            key: Self.remotePortConflictStatusKey,
-            value: "SSH port conflicts (\(target)): \(conflictsList)",
-            icon: "exclamationmark.triangle.fill",
-            color: nil,
-            timestamp: Date()
+        remoteControlChannel?.stop()
+        let channel = RemoteControlChannel(
+            connection: integration.connection,
+            router: integration.inboundRouter,
+            onHealth: { [weak self] health in
+                guard let self else { return }
+                self.dispatchRemote(.capability(.cmuxControl, health))
+                if health.state == .degraded {
+                    // A transport-caused channel close degraded the capability;
+                    // tear our handle down so the next `.connected` re-accepts a
+                    // fresh reverse channel (mirrors the proxy tunnel path).
+                    self.stopRemoteControlChannel()
+                }
+            }
         )
+        remoteControlChannel = channel
+        channel.start()
+#if DEBUG
+        cmuxDebugLog("remote.control.start.ok workspace=\(id.uuidString.prefix(5))")
+#endif
+    }
 
-        let fingerprint = conflicts.map(String.init).joined(separator: ",")
-        appendSidebarLog(
-            message: "Port conflicts while forwarding \(target): \(conflictsList)",
-            level: .warning,
-            source: "remote-forward"
-        )
+    /// Stop the running `cmux_control` reverse channel. Called from the
+    /// reducer's `.stopControlChannel` effect and from the degraded-health
+    /// callback. Does NOT itself dispatch a capability event — the reducer's
+    /// transport mapping governs the resulting state.
+    func stopRemoteControlChannel() {
+        remoteControlChannel?.stop()
+        remoteControlChannel = nil
     }
 
     private func clearRemoteDetectedSurfacePorts() {

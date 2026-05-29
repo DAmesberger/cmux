@@ -1183,47 +1183,15 @@ final class WindowTransparencyDecisionTests: XCTestCase {
     }
 }
 
-final class WorkspaceRemoteDaemonManifestTests: XCTestCase {
-    func testParsesEmbeddedRemoteDaemonManifestJSON() throws {
-        let manifestJSON = """
-        {
-          "schemaVersion": 1,
-          "appVersion": "0.62.0",
-          "releaseTag": "v0.62.0",
-          "releaseURL": "https://github.com/manaflow-ai/cmux/releases/tag/v0.62.0",
-          "checksumsAssetName": "cmuxd-remote-checksums.txt",
-          "checksumsURL": "https://github.com/manaflow-ai/cmux/releases/download/v0.62.0/cmuxd-remote-checksums.txt",
-          "entries": [
-            {
-              "goOS": "linux",
-              "goArch": "amd64",
-              "assetName": "cmuxd-remote-linux-amd64",
-              "downloadURL": "https://github.com/manaflow-ai/cmux/releases/download/v0.62.0/cmuxd-remote-linux-amd64",
-              "sha256": "abc123"
-            }
-          ]
-        }
-        """
-
-        let manifest = Workspace.remoteDaemonManifest(from: [
-            Workspace.remoteDaemonManifestInfoKey: manifestJSON,
-        ])
-
-        XCTAssertEqual(manifest?.releaseTag, "v0.62.0")
-        XCTAssertEqual(manifest?.entry(goOS: "linux", goArch: "amd64")?.assetName, "cmuxd-remote-linux-amd64")
-    }
-
-    func testRemoteDaemonCachePathIsVersionedByPlatform() throws {
-        let url = try Workspace.remoteDaemonCachedBinaryURL(
-            version: "0.62.0",
-            goOS: "linux",
-            goArch: "arm64"
-        )
-
-        XCTAssertTrue(url.path.contains("/Application Support/cmux/remote-daemons/0.62.0/linux-arm64/"))
-        XCTAssertEqual(url.lastPathComponent, "cmuxd-remote")
-    }
-}
+// Removed: `WorkspaceRemoteDaemonManifestTests`.
+// The redesign moved remote-daemon provisioning out of the Swift app and into
+// ghostty's `client.zig` upload path (`ensureRemoteGhostty` / `findLocalDaemon`
+// + `shared.remoteDaemonInstallPath`). The Workspace-side manifest download
+// surface this class exercised (`Workspace.remoteDaemonManifest(from:)`,
+// `remoteDaemonManifestInfoKey`, `remoteDaemonCachedBinaryURL(version:goOS:
+// goArch:)`) no longer exists. The remote-binary naming/versioning contract now
+// lives in the ghostty submodule (`shared.zig`) and the bundling scripts, and is
+// verified there, not against a removed Workspace API.
 
 final class RemoteLoopbackHTTPRequestRewriterTests: XCTestCase {
     func testRewritesLoopbackAliasHostHeadersToLocalhost() {
@@ -1939,13 +1907,7 @@ final class BrowserPanelRemoteStoreTests: XCTestCase {
                 destination: "cmux-macmini",
                 port: 22,
                 identityFile: nil,
-                sshOptions: [],
-                localProxyPort: nil,
-                relayPort: 64001,
-                relayID: "relay-store-dest",
-                relayToken: String(repeating: "a", count: 64),
-                localSocketPath: "/tmp/cmux-store-dest.sock",
-                terminalStartupCommand: "ssh cmux-macmini"
+                sshOptions: []
             ),
             autoConnect: false
         )
@@ -1971,13 +1933,7 @@ final class BrowserPanelRemoteStoreTests: XCTestCase {
                 destination: "cmux-macmini",
                 port: 22,
                 identityFile: nil,
-                sshOptions: [],
-                localProxyPort: nil,
-                relayPort: 64002,
-                relayID: "relay-store-source",
-                relayToken: String(repeating: "b", count: 64),
-                localSocketPath: "/tmp/cmux-store-source.sock",
-                terminalStartupCommand: "ssh cmux-macmini"
+                sshOptions: []
             ),
             autoConnect: false
         )
@@ -2008,19 +1964,13 @@ final class BrowserPanelRemoteStoreTests: XCTestCase {
             destination: "cmux-macmini",
             port: nil,
             identityFile: nil,
-            sshOptions: [],
-            localProxyPort: nil,
-            relayPort: 64000,
-            relayID: "relay-test",
-            relayToken: String(repeating: "a", count: 64),
-            localSocketPath: "/tmp/cmux-test.sock",
-            terminalStartupCommand: "ssh cmux-macmini"
+            sshOptions: []
         )
 
         workspace.configureRemoteConnection(configuration, autoConnect: false)
         _ = workspace.newBrowserSurface(inPane: paneId, url: URL(string: "https://example.com"), focus: false)
 
-        workspace.markRemoteTerminalSessionEnded(surfaceId: initialTerminalId, relayPort: configuration.relayPort)
+        workspace.markRemoteTerminalSessionEnded(surfaceId: initialTerminalId, relayPort: nil)
 
         XCTAssertTrue(workspace.isRemoteWorkspace)
         XCTAssertEqual(workspace.activeRemoteTerminalSessionCount, 0)
@@ -2029,83 +1979,6 @@ final class BrowserPanelRemoteStoreTests: XCTestCase {
 
         XCTAssertTrue(workspace.isRemoteWorkspace)
         XCTAssertEqual(workspace.activeRemoteTerminalSessionCount, 1)
-    }
-}
-
-final class WorkspaceRemoteConfigurationTransportKeyTests: XCTestCase {
-    func testProxyBrokerTransportKeyIgnoresControlPath() {
-        let first = WorkspaceRemoteConfiguration(
-            destination: "cmux-macmini",
-            port: 22,
-            identityFile: "~/.ssh/id_ed25519",
-            sshOptions: [
-                "Compression=yes",
-                "ControlMaster=auto",
-                "ControlPath=/tmp/cmux-ssh-501-64000-%C",
-            ],
-            localProxyPort: 9000,
-            relayPort: 64000,
-            relayID: "relay-a",
-            relayToken: "token-a",
-            localSocketPath: "/tmp/cmux-a.sock",
-            terminalStartupCommand: "ssh cmux-macmini"
-        )
-        let second = WorkspaceRemoteConfiguration(
-            destination: "cmux-macmini",
-            port: 22,
-            identityFile: "~/.ssh/id_ed25519",
-            sshOptions: [
-                "Compression=yes",
-                "ControlMaster=auto",
-                "ControlPath=/tmp/cmux-ssh-501-64001-%C",
-            ],
-            localProxyPort: 9000,
-            relayPort: 64001,
-            relayID: "relay-b",
-            relayToken: "token-b",
-            localSocketPath: "/tmp/cmux-b.sock",
-            terminalStartupCommand: "ssh cmux-macmini"
-        )
-
-        XCTAssertEqual(first.proxyBrokerTransportKey, second.proxyBrokerTransportKey)
-    }
-}
-
-final class WorkspaceRemoteSSHCleanupTests: XCTestCase {
-    func testOrphanedCMUXRemoteSSHPIDsMatchesOnlyParentOneRelayAndDaemonTransports() {
-        let psOutput = """
-          101 1 /usr/bin/ssh -N -T -S none -o ControlPath=/tmp/cmux-ssh-501-56080-%C -R 127.0.0.1:56080:127.0.0.1:64048 cmux-macmini
-          102 1 /usr/bin/ssh -T -S none -o RequestTTY=no cmux-macmini sh -c 'exec .cmux/bin/cmuxd-remote/0.63.1/darwin-arm64/cmuxd-remote serve --stdio'
-          103 999 /usr/bin/ssh -N -T -S none -R 127.0.0.1:56081:127.0.0.1:64049 cmux-macmini
-          104 1 /usr/bin/ssh -tt cmux-macmini
-          105 1 /usr/bin/ssh -N -T -S none -R 127.0.0.1:56082:127.0.0.1:64050 other-host
-          106 1 /usr/bin/ssh -T -S none cmux-macmini /bin/sh
-        """
-
-        XCTAssertEqual(
-            WorkspaceRemoteSessionController.orphanedCMUXRemoteSSHPIDs(
-                psOutput: psOutput,
-                destination: "cmux-macmini"
-            ),
-            [101, 102]
-        )
-    }
-
-    func testOrphanedCMUXRemoteSSHPIDsCanRestrictCleanupToSpecificRelayPort() {
-        let psOutput = """
-          201 1 /usr/bin/ssh -N -T -S none -R 127.0.0.1:56080:127.0.0.1:64048 cmux-macmini
-          202 1 /usr/bin/ssh -N -T -S none -R 127.0.0.1:56081:127.0.0.1:64049 cmux-macmini
-          203 1 /usr/bin/ssh -T -S none -o RequestTTY=no cmux-macmini sh -c 'exec .cmux/bin/cmuxd-remote/0.63.1/darwin-arm64/cmuxd-remote serve --stdio'
-        """
-
-        XCTAssertEqual(
-            WorkspaceRemoteSessionController.orphanedCMUXRemoteSSHPIDs(
-                psOutput: psOutput,
-                destination: "cmux-macmini",
-                relayPort: 56081
-            ),
-            [202]
-        )
     }
 }
 
@@ -2154,61 +2027,13 @@ final class TitlebarDoubleClickPreferenceTests: XCTestCase {
     }
 }
 
-final class WorkspaceRemoteDaemonPendingCallRegistryTests: XCTestCase {
-    func testSupportsMultiplePendingCallsResolvedOutOfOrder() {
-        let registry = WorkspaceRemoteDaemonPendingCallRegistry()
-        let first = registry.register()
-        let second = registry.register()
-
-        XCTAssertTrue(registry.resolve(id: second.id, payload: [
-            "ok": true,
-            "result": ["stream_id": "second"],
-        ]))
-
-        switch registry.wait(for: second, timeout: 0.1) {
-        case .response(let response):
-            XCTAssertEqual(response["ok"] as? Bool, true)
-            XCTAssertEqual((response["result"] as? [String: String])?["stream_id"], "second")
-        default:
-            XCTFail("second pending call should complete independently")
-        }
-
-        XCTAssertTrue(registry.resolve(id: first.id, payload: [
-            "ok": true,
-            "result": ["stream_id": "first"],
-        ]))
-
-        switch registry.wait(for: first, timeout: 0.1) {
-        case .response(let response):
-            XCTAssertEqual(response["ok"] as? Bool, true)
-            XCTAssertEqual((response["result"] as? [String: String])?["stream_id"], "first")
-        default:
-            XCTFail("first pending call should remain pending until its own response arrives")
-        }
-    }
-
-    func testFailAllSignalsEveryPendingCall() {
-        let registry = WorkspaceRemoteDaemonPendingCallRegistry()
-        let first = registry.register()
-        let second = registry.register()
-
-        registry.failAll("daemon transport stopped")
-
-        switch registry.wait(for: first, timeout: 0.1) {
-        case .failure(let message):
-            XCTAssertEqual(message, "daemon transport stopped")
-        default:
-            XCTFail("first pending call should receive shared failure")
-        }
-
-        switch registry.wait(for: second, timeout: 0.1) {
-        case .failure(let message):
-            XCTAssertEqual(message, "daemon transport stopped")
-        default:
-            XCTFail("second pending call should receive shared failure")
-        }
-    }
-}
+// Removed: `WorkspaceRemoteDaemonPendingCallRegistryTests`.
+// `WorkspaceRemoteDaemonPendingCallRegistry` (the Swift-side request/response
+// correlation table for the old raw daemon RPC protocol) was removed when the
+// control plane moved onto ghostty's channel-mux. Out-of-order request
+// correlation is now owned by the mux + the cmux_control reverse channel, not a
+// Workspace-level registry, so there is no longer an in-process type for this
+// class to exercise.
 
 final class WindowBackgroundSelectionGateTests: XCTestCase {
     func testShouldApplyWindowBackgroundUsesOwningWindowSelectionWhenAvailable() {

@@ -55,13 +55,7 @@ final class SessionPersistenceTests: XCTestCase {
             destination: "cmux-macmini",
             port: nil,
             identityFile: nil,
-            sshOptions: [],
-            localProxyPort: nil,
-            relayPort: 64001,
-            relayID: "relay-test",
-            relayToken: String(repeating: "c", count: 64),
-            localSocketPath: "/tmp/cmux-test.sock",
-            terminalStartupCommand: "ssh cmux-macmini"
+            sshOptions: []
         )
 
         workspace.configureRemoteConnection(configuration, autoConnect: false)

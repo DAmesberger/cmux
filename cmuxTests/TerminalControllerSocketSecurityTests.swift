@@ -149,13 +149,7 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
                 destination: "example.com",
                 port: 2222,
                 identityFile: "/Users/test/.ssh/id_ed25519",
-                sshOptions: ["ControlMaster=auto", "ControlPersist=600"],
-                localProxyPort: 1080,
-                relayPort: 4444,
-                relayID: "relay-id",
-                relayToken: "relay-token",
-                localSocketPath: "/tmp/cmux-test.sock",
-                terminalStartupCommand: "ssh example.com"
+                sshOptions: ["ControlMaster=auto", "ControlPersist=600"]
             ),
             autoConnect: false
         )

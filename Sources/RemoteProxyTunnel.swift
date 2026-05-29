@@ -20,6 +20,17 @@ final class RemoteProxyTunnel {
     private var sessions: [UUID: ProxySession] = [:]
     private let queue = DispatchQueue(label: "cmux.remote.proxy.tunnel", qos: .userInitiated)
 
+    /// Fired (once, coalesced) the first time a proxy mux channel closes
+    /// because the underlying SSH transport dropped — i.e. a genuine
+    /// browser-proxy capability degradation rather than a per-connection
+    /// upstream-dial failure or a normal end-of-request close. The owner
+    /// (`WorkspaceSSHIntegration` / `Workspace`) uses this to emit a
+    /// `.capability(.browserProxy, .degraded(.channelClosed))` event and to
+    /// key tunnel teardown on the channel close instead of on every
+    /// transient `.reconnecting` transport tick.
+    var onTransportChannelClosed: (() -> Void)?
+    private var didReportTransportClose = false
+
     /// The port the listener is bound to. Valid after `start()` returns successfully;
     /// zero before that.
     private(set) var localPort: UInt16 = 0
@@ -39,6 +50,7 @@ final class RemoteProxyTunnel {
     /// local port. Throws if the listener cannot be created.
     @discardableResult
     func start() throws -> UInt16 {
+        didReportTransportClose = false
         let params = NWParameters.tcp
         params.requiredLocalEndpoint = NWEndpoint.hostPort(
             host: NWEndpoint.Host("127.0.0.1"),
@@ -102,14 +114,30 @@ final class RemoteProxyTunnel {
         let session = ProxySession(
             connection: nwConn,
             sshConnection: connection,
-            queue: queue
-        ) { [weak self] id in
-            Task { @MainActor in
-                self?.sessions.removeValue(forKey: id)
+            queue: queue,
+            onClose: { [weak self] id in
+                Task { @MainActor in
+                    self?.sessions.removeValue(forKey: id)
+                }
+            },
+            onTransportClose: { [weak self] in
+                Task { @MainActor in
+                    self?.handleTransportChannelClosed()
+                }
             }
-        }
+        )
         sessions[session.id] = session
         session.start()
+    }
+
+    /// Coalesce the first transport-level proxy channel close into a single
+    /// owner callback. Subsequent closes within the same tunnel lifetime are
+    /// ignored; a fresh tunnel (new `start()`) re-arms reporting.
+    @MainActor
+    private func handleTransportChannelClosed() {
+        guard !didReportTransportClose else { return }
+        didReportTransportClose = true
+        onTransportChannelClosed?()
     }
 }
 
@@ -122,6 +150,12 @@ private final class ProxySession: @unchecked Sendable {
     private let sshConnection: Ghostty.SSHConnection
     private let queue: DispatchQueue
     private let onClose: @Sendable (UUID) -> Void
+    /// Fired when this session's channel closes because the underlying SSH
+    /// transport dropped (`wasTransport`/`.transport`/`.daemonShutdown`), as
+    /// opposed to a normal request end or a per-connection upstream-dial
+    /// `.serviceError`. Lets the tunnel owner distinguish "the proxy
+    /// capability is degraded" from "this one tab's request ended."
+    private let onTransportClose: @Sendable () -> Void
 
     private enum ProxyProtocol { case undecided, socks5, connect }
     private enum SocksStage { case greeting, request }
@@ -141,12 +175,14 @@ private final class ProxySession: @unchecked Sendable {
         connection: NWConnection,
         sshConnection: Ghostty.SSHConnection,
         queue: DispatchQueue,
-        onClose: @escaping @Sendable (UUID) -> Void
+        onClose: @escaping @Sendable (UUID) -> Void,
+        onTransportClose: @escaping @Sendable () -> Void
     ) {
         self.nwConn = connection
         self.sshConnection = sshConnection
         self.queue = queue
         self.onClose = onClose
+        self.onTransportClose = onTransportClose
     }
 
     func start() {
@@ -442,7 +478,7 @@ private final class ProxySession: @unchecked Sendable {
             for await event in ch.events {
                 guard let self, !self.isClosed else { break }
                 switch event {
-                case .closed(let reason, _, _):
+                case .closed(let reason, _, let wasTransport):
                     if reason == .serviceError {
                         // Upstream dial failed; send a SOCKS5 refused / HTTP 502 based on proto.
                         switch self.proto {
@@ -452,6 +488,16 @@ private final class ProxySession: @unchecked Sendable {
                             self.sendAndClose(Self.httpResponse(status: "502 Bad Gateway", close: true))
                         }
                     } else {
+                        // A transport-level close (the SSH mux dropped, the
+                        // daemon shut down, or libghostty flagged the close as
+                        // transport-caused) means the whole browser-proxy
+                        // capability is degraded — not just this one request.
+                        // Surface it to the owner so it can mark the capability
+                        // degraded and tear the tunnel down here, instead of on
+                        // every transient transport `.reconnecting` tick.
+                        if wasTransport || reason == .transport || reason == .daemonShutdown {
+                            self.onTransportClose()
+                        }
                         self.close(reason: nil)
                     }
                 default:

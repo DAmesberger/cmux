@@ -342,24 +342,27 @@ def main() -> int:
             status = client._call("workspace.remote.status", {"workspace_id": workspace_id}) or {}
             status_remote = status.get("remote") or {}
             _must(bool(status_remote.get("enabled")) is True, f"workspace.remote.status should report enabled remote: {status}")
-            daemon = status_remote.get("daemon") or {}
+            # The remote-health redesign collapsed the separate `daemon` block
+            # into the single transport `state` (projected by RemoteHealthReducer
+            # from the PRIMARY transport only) plus the derived `proxy` block.
+            # There is no longer a `daemon.state` / `daemon.detail` field.
             _must(
-                str(daemon.get("state") or "") in {"unavailable", "bootstrapping", "ready", "error"},
-                f"workspace.remote.status should include daemon state metadata: {status_remote}",
+                str(status_remote.get("state") or "")
+                in {"disconnected", "connecting", "connected", "reconnecting", "error"},
+                f"workspace.remote.status should include transport state metadata: {status_remote}",
             )
             # Fail-fast regression: unreachable SSH target should not stay stuck connecting forever.
-            # Current main can either keep the failed remote config around long enough to expose
-            # a daemon bootstrap error, or drop back to a disconnected local workspace once the
-            # failed terminal session has fully torn down.
+            # The transport either surfaces a terminal `error` (with a detail
+            # string), keeps relentlessly `reconnecting`, or drops back to a
+            # disconnected local workspace once the failed session has torn down.
             deadline_daemon = time.time() + 12.0
             last_status = status
-            saw_bootstrap_error = False
+            saw_transport_error = False
             while time.time() < deadline_daemon:
                 last_status = client._call("workspace.remote.status", {"workspace_id": workspace_id}) or {}
                 last_remote = last_status.get("remote") or {}
-                last_daemon = last_remote.get("daemon") or {}
-                if str(last_daemon.get("state") or "") == "error":
-                    saw_bootstrap_error = True
+                if str(last_remote.get("state") or "") == "error":
+                    saw_transport_error = True
                     break
                 if bool(last_remote.get("enabled")) is False and str(last_remote.get("state") or "") == "disconnected":
                     break
@@ -368,31 +371,27 @@ def main() -> int:
                 raise cmuxError(f"unreachable host should fail fast instead of hanging in connecting: {last_status}")
 
             last_remote = last_status.get("remote") or {}
-            last_daemon = last_remote.get("daemon") or {}
-            if saw_bootstrap_error:
-                detail = str(last_daemon.get("detail") or "")
-                _must("bootstrap failed" in detail.lower(), f"daemon error should mention bootstrap failure: {last_status}")
-                _must(re.search(r"retry\s+\d+", detail.lower()) is not None, f"daemon error should include retry count: {last_status}")
+            if saw_transport_error:
+                detail = str(last_remote.get("detail") or "")
+                _must(bool(detail), f"transport error should carry a human-readable detail: {last_status}")
             else:
                 _must(
                     str(last_remote.get("state") or "") == "disconnected",
                     f"unreachable host should eventually disconnect if it clears remote config: {last_status}",
                 )
-                _must(
-                    str(last_daemon.get("state") or "") == "unavailable",
-                    f"daemon state should reset when the failed remote session tears down: {last_status}",
-                )
 
-            # Lifecycle regression: disconnect with clear should reset remote/daemon metadata.
+            # Lifecycle regression: disconnect with clear should reset remote metadata.
             disconnected = client._call(
                 "workspace.remote.disconnect",
                 {"workspace_id": workspace_id, "clear": True},
             ) or {}
             disconnected_remote = disconnected.get("remote") or {}
-            disconnected_daemon = disconnected_remote.get("daemon") or {}
             _must(bool(disconnected_remote.get("enabled")) is False, f"remote config should be cleared: {disconnected}")
             _must(str(disconnected_remote.get("state") or "") == "disconnected", f"remote state should be disconnected: {disconnected}")
-            _must(str(disconnected_daemon.get("state") or "") == "unavailable", f"daemon state should reset to unavailable: {disconnected}")
+            _must(
+                (disconnected_remote.get("proxy") or {}).get("state") in {"unavailable", None},
+                f"proxy state should reset to unavailable after disconnect: {disconnected}",
+            )
             try:
                 client._call("workspace.remote.reconnect", {"workspace_id": workspace_id})
                 raise cmuxError("workspace.remote.reconnect should fail when remote config was cleared")

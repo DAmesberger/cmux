@@ -34,8 +34,12 @@ struct BrowserProxyEndpoint: Equatable {
 struct BrowserRemoteWorkspaceStatus: Equatable {
     let target: String
     let connectionState: WorkspaceRemoteConnectionState
-    let heartbeatCount: Int
-    let lastHeartbeatAt: Date?
+    /// Fully-resolved overlay presentation from `RemoteOverlayPolicy` for
+    /// the browser host (nil = render nothing). The browser overlay is
+    /// painted by `PanelContentView` from the value computed in
+    /// `WorkspaceContentView`; this field keeps the snapshot self-describing
+    /// and participates in the cheap-equality dedupe.
+    var presentation: RemoteOverlayPresentation?
 }
 
 enum GhosttyBackgroundTheme {

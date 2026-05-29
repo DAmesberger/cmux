@@ -15,24 +15,14 @@ struct PanelContentView: View {
     let isSplit: Bool
     let appearance: PanelAppearance
     let hasUnreadNotification: Bool
-    /// Non-nil only when this panel is in a remote workspace AND the
-    /// workspace's SSH connection is currently `.connecting`,
-    /// `.reconnecting`, `.error`, or `.disconnected`. Drives the
-    /// `RemoteReconnectOverlay` that keeps the panel mounted while the
-    /// connection cycles, so a network blip doesn't manifest as a
-    /// silent panel vanish.
-    let remoteConnectionState: WorkspaceRemoteConnectionState?
-    let remoteConnectionTarget: String?
-    let remoteConnectionDetail: String?
-    /// Set while ghostty is uploading the daemon binary. When non-nil
-    /// the overlay swaps its headline to "Uploading runtime…" and
-    /// renders a progress bar instead of just a spinner.
-    let remoteProvisioning: WorkspaceRemoteProvisioning?
-    /// Set while ghostty is actively retrying a dropped connection.
-    /// Drives the elapsed-time and attempt-counter line in the
-    /// overlay so the user can tell how long they've been
-    /// disconnected.
-    let remoteReconnect: WorkspaceRemoteReconnectInfo?
+    /// Fully-resolved overlay presentation from `RemoteOverlayPolicy` for
+    /// the BROWSER host (computed in `WorkspaceContentView` as an immutable
+    /// value, per the snapshot-boundary rule). Non-nil only for a remote
+    /// workspace whose policy decided the browser should paint something.
+    /// Terminal panels render their overlay from the AppKit portal
+    /// (`GhosttySurfaceScrollView.setReconnectOverlay`) instead, because
+    /// SwiftUI `.overlay {}` cannot paint above the portal-hosted surface.
+    let remoteOverlayPresentation: RemoteOverlayPresentation?
     let onFocus: () -> Void
     let onRequestPanelFocus: () -> Void
     let onTriggerFlash: () -> Void
@@ -124,35 +114,22 @@ struct PanelContentView: View {
 
     @ViewBuilder
     private var remoteReconnectOverlay: some View {
-        if let state = remoteConnectionState, shouldShowReconnectOverlay(for: state) {
-            RemoteReconnectOverlay(
-                state: state,
-                target: remoteConnectionTarget,
-                detail: remoteConnectionDetail,
-                provisioning: remoteProvisioning,
-                reconnect: remoteReconnect
-            )
-            .transition(.opacity)
+        // Only the BROWSER host paints via this SwiftUI overlay; terminal
+        // panels render from the AppKit portal. The policy (upstream) has
+        // already decided what — if anything — to show, so this view just
+        // mounts the resolved presentation verbatim.
+        if isBrowserHost, let presentation = remoteOverlayPresentation {
+            RemoteReconnectOverlay(presentation: presentation)
+                .transition(.opacity)
         }
     }
 
-    private func shouldShowReconnectOverlay(for state: WorkspaceRemoteConnectionState) -> Bool {
-        // Terminal panels render the overlay from the AppKit portal
-        // (`GhosttySurfaceScrollView.setReconnectOverlay`) because
-        // SwiftUI `.overlay {}` cannot paint above the portal-hosted
-        // surface. The browser case continues to use the SwiftUI
-        // overlay until we move it to AppKit too.
+    private var isBrowserHost: Bool {
         switch panel.panelType {
         case .browser:
-            break
+            return true
         case .terminal, .markdown, .filePreview, .rightSidebarTool:
             return false
-        }
-        switch state {
-        case .connected:
-            return false
-        case .connecting, .reconnecting, .error, .disconnected:
-            return true
         }
     }
 
