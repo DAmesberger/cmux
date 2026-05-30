@@ -114722,6 +114722,35 @@
         }
       }
     },
+    "remote.overlay.provisioning.resetWarning": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Updating the remote runtime restarts the remote agent — active remote sessions will be reset."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "リモートランタイムを更新するとリモートエージェントが再起動し、アクティブなリモートセッションはリセットされます。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "원격 런타임을 업데이트하면 원격 에이전트가 다시 시작되어 활성 원격 세션이 초기화됩니다."
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Оновлення середовища виконання перезапускає віддалений агент — активні віддалені сесії буде скинуто."
+          }
+        }
+      }
+    },
     "remote.disconnectBanner.reconnectHint": {
       "extractionState": "manual",
       "localizations": {

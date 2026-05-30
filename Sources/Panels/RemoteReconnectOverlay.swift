@@ -62,6 +62,24 @@ struct RemoteReconnectOverlay: View {
                         .lineLimit(3)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+
+                // Provisioning (an `.uploading` state) only ever occurs when the
+                // remote daemon binary is being (re)installed, which restarts the
+                // daemon and discards its in-memory sessions. Warn the user that
+                // the runtime update resets active remote sessions, rather than
+                // silently dropping their terminals.
+                if isUploading {
+                    Text(String(
+                        localized: "remote.overlay.provisioning.resetWarning",
+                        defaultValue: "Updating the remote runtime restarts the remote agent — active remote sessions will be reset."
+                    ))
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.orange.opacity(0.95))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 280)
+                }
             }
             .padding(.horizontal, 28)
             .padding(.vertical, 22)
